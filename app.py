@@ -4,6 +4,8 @@ Versao com dados demonstrativos embutidos (sem dependencia de SQL Warehouse).
 
 import hashlib
 import html
+import json
+from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
 
@@ -40,11 +42,39 @@ GDM_SCALE = [
 APP_DIR = Path(__file__).resolve().parent
 TEMPLATE_PATH = APP_DIR / "template_dados_fenotipicos.xlsx"
 REQUIRED_UPLOAD_COLUMNS = {"trial_name", "germplasm_name", "yield"}
+MATERIAL_GID_COLUMN = "gid"
 NULL_FILTER_VALUE = "(Nulo)"
 DEFAULT_FILTER_VALUES = {
     "plot_is_discarded": ["False"],
     "missing_dev_file": ["no"],
 }
+
+MATERIAL_FILTER_LABELS = {
+    "business_region": "Região comercial",
+    "production_name": "Nome de produção",
+    "commercial_name": "Nome comercial",
+    "category": "Categoria",
+    "brand": "Marca",
+    "cycle": "Ciclo",
+    "days_to_spike": "Dias ao espigamento",
+    "days_to_maturity": "Dias à maturidade",
+    "Tipo de elemento": "Tipo de elemento",
+}
+
+OBSERVATION_FILTERS = [
+    ("year", "Ano"),
+    ("trial_type", "Tipo de ensaio"),
+    ("signed_status", "Status"),
+    ("plot_is_discarded", "Parcela descartada"),
+    ("missing_dev_file", "Missing no arquivo DEV"),
+    ("country_name", "País"),
+    ("macroregion_name", "Macrorregião"),
+    ("microregion_name", "Microrregião"),
+    ("state_name", "Estado"),
+    ("location_name", "Local"),
+    ("germplasm_name", "Germoplasma"),
+    ("gid", "GID"),
+]
 
 px.defaults.template = "plotly_white"
 px.defaults.color_discrete_sequence = [GDM_LIME, GDM_NAVY, "#6F7C80", "#DCE7EA", GDM_CORAL]
@@ -580,6 +610,26 @@ def generate_sample_data(n_plots=6000, seed=42):
     return pd.DataFrame(rows)
 
 SAMPLE_DATA = generate_sample_data()
+SAMPLE_MATERIALS = (
+    SAMPLE_DATA[["gid", "germplasm_name", "company_name"]]
+    .drop_duplicates("gid")
+    .rename(
+        columns={
+            "germplasm_name": "commercial_name",
+            "company_name": "brand",
+        }
+    )
+    .assign(
+        business_region="Brasil",
+        category=lambda frame: np.where(
+            frame["commercial_name"].str.startswith("GDM-"),
+            "EXPERIMENTAL",
+            "CHECK",
+        ),
+        cycle="Não informado",
+        **{"Tipo de elemento": "Item"},
+    )
+)
 
 CATEGORICAL_COLS = [
     "data_source", "trial_type", "trial_name", "pipeline_file",
@@ -595,8 +645,9 @@ CATEGORICAL_COLS = [
 # ---------------------------------------------------------------------------
 @st.cache_data(show_spinner=False)
 def read_uploaded_excel(file_bytes: bytes):
-    """Read and validate the first sheet of an uploaded Excel workbook."""
-    df = pd.read_excel(BytesIO(file_bytes), sheet_name=0, engine="openpyxl")
+    """Read observations from sheet 1 and, when present, materials from sheet 2."""
+    workbook = pd.ExcelFile(BytesIO(file_bytes), engine="openpyxl")
+    df = pd.read_excel(workbook, sheet_name=0)
     df.columns = [str(column).strip() for column in df.columns]
     df = df.dropna(how="all").reset_index(drop=True)
 
@@ -613,7 +664,46 @@ def read_uploaded_excel(file_bytes: bytes):
         raise ValueError("A primeira aba do arquivo não contém registros.")
     if df["yield"].notna().sum() == 0:
         raise ValueError("A coluna yield não contém valores numéricos válidos.")
-    return df, invalid_yield
+
+    materials = None
+    material_sheet_name = None
+    if len(workbook.sheet_names) > 1:
+        material_sheet_name = workbook.sheet_names[1]
+        materials = pd.read_excel(workbook, sheet_name=1)
+        materials.columns = [str(column).strip() for column in materials.columns]
+        materials = materials.dropna(how="all").reset_index(drop=True)
+        if MATERIAL_GID_COLUMN not in materials.columns:
+            raise ValueError(
+                f"A segunda aba ({material_sheet_name}) precisa conter a coluna gid."
+            )
+        if MATERIAL_GID_COLUMN not in df.columns:
+            raise ValueError(
+                "A primeira aba precisa conter a coluna gid para vincular os materiais."
+            )
+        materials[MATERIAL_GID_COLUMN] = normalize_gid_series(
+            materials[MATERIAL_GID_COLUMN]
+        )
+        materials = materials.dropna(subset=[MATERIAL_GID_COLUMN])
+        materials = materials.drop_duplicates(MATERIAL_GID_COLUMN).reset_index(drop=True)
+        df[MATERIAL_GID_COLUMN] = normalize_gid_series(df[MATERIAL_GID_COLUMN])
+
+    return df, invalid_yield, materials, material_sheet_name
+
+
+def normalize_gid_value(value):
+    """Normalize numeric and textual GIDs to the same stable string representation."""
+    if pd.isna(value):
+        return None
+    if isinstance(value, (int, np.integer)):
+        return str(int(value))
+    if isinstance(value, (float, np.floating)) and float(value).is_integer():
+        return str(int(value))
+    normalized = str(value).strip()
+    return normalized or None
+
+
+def normalize_gid_series(series: pd.Series) -> pd.Series:
+    return series.map(normalize_gid_value)
 
 
 def filter_options(data: pd.DataFrame, column: str):
@@ -640,13 +730,25 @@ def apply_column_filter(data: pd.DataFrame, column: str, selected):
     return data.loc[mask]
 
 
-def cascading_multiselect(container, data, column, label, source_id, defaults=None):
+def filter_state_key(column: str, source_id: str, prefix="cascade") -> str:
+    return f"{prefix}_{column}_{source_id}"
+
+
+def cascading_multiselect(
+    container,
+    data,
+    column,
+    label,
+    source_id,
+    defaults=None,
+    key_prefix="cascade",
+):
     """Render one filter and return the dataset available to the next filter."""
     if column not in data.columns:
         return data, []
 
     options = filter_options(data, column)
-    key = f"cascade_{column}_{source_id}"
+    key = filter_state_key(column, source_id, key_prefix)
     if key in st.session_state:
         valid_selection = [
             value for value in st.session_state[key] if value in options
@@ -670,6 +772,86 @@ def cascading_multiselect(container, data, column, label, source_id, defaults=No
 
     selected = container.multiselect(label, options, key=key)
     return apply_column_filter(data, column, selected), selected
+
+
+def material_display_labels(materials: pd.DataFrame) -> dict:
+    """Build concise, unique labels while retaining GID as the stored value."""
+    labels = {}
+    for _, row in materials.iterrows():
+        gid = normalize_gid_value(row.get(MATERIAL_GID_COLUMN))
+        if gid is None:
+            continue
+        name = next(
+            (
+                str(row.get(column)).strip()
+                for column in ["commercial_name", "production_name", "germplasm_name"]
+                if pd.notna(row.get(column)) and str(row.get(column)).strip()
+            ),
+            gid,
+        )
+        category = row.get("category")
+        parts = [name, f"GID {gid}"]
+        if pd.notna(category) and str(category).strip():
+            parts.append(str(category).strip())
+        labels[gid] = " · ".join(parts)
+    return labels
+
+
+def scenario_payload(source_id, material_columns, observation_columns):
+    """Serialize current filters without any uploaded data or credentials."""
+    material_filters = {
+        column: st.session_state.get(
+            filter_state_key(column, source_id, "material"), []
+        )
+        for column in material_columns
+    }
+    observation_filters = {
+        column: st.session_state.get(filter_state_key(column, source_id), [])
+        for column in observation_columns
+    }
+    return {
+        "app": "gdm-wheat-analysis",
+        "version": 1,
+        "saved_at_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "source_fingerprint": source_id,
+        "filters": {
+            "material_attributes": material_filters,
+            "selected_gids": st.session_state.get(
+                filter_state_key("selected_gids", source_id, "material"), []
+            ),
+            "observations": observation_filters,
+        },
+    }
+
+
+def load_scenario_into_state(payload, source_id):
+    """Load a versioned scenario into widget state before filters are rendered."""
+    if payload.get("app") != "gdm-wheat-analysis":
+        raise ValueError("Este JSON não é um cenário do GDM Wheat Analysis.")
+    if payload.get("version") != 1:
+        raise ValueError("Versão de cenário não suportada.")
+
+    filters = payload.get("filters")
+    if not isinstance(filters, dict):
+        raise ValueError("O cenário não contém a seção filters.")
+
+    material_filters = filters.get("material_attributes", {})
+    observation_filters = filters.get("observations", {})
+    selected_gids = filters.get("selected_gids", [])
+    if not isinstance(material_filters, dict) or not isinstance(observation_filters, dict):
+        raise ValueError("Os filtros do cenário têm formato inválido.")
+    if not isinstance(selected_gids, list):
+        raise ValueError("selected_gids precisa ser uma lista.")
+
+    for column, values in material_filters.items():
+        if isinstance(values, list):
+            st.session_state[filter_state_key(column, source_id, "material")] = values
+    for column, values in observation_filters.items():
+        if isinstance(values, list):
+            st.session_state[filter_state_key(column, source_id)] = values
+    st.session_state[
+        filter_state_key("selected_gids", source_id, "material")
+    ] = [normalize_gid_value(value) for value in selected_gids]
 
 
 def format_integer(value) -> str:
@@ -771,7 +953,7 @@ st.sidebar.markdown(
 uploaded_file = st.sidebar.file_uploader(
     "Arquivo Excel",
     type=["xlsx"],
-    help="A primeira aba será importada. Campos obrigatórios: trial_name, germplasm_name e yield.",
+    help="A primeira aba contém as observações. Se houver uma segunda aba, ela será usada como cadastro de materiais ligado pela coluna gid.",
 )
 
 if TEMPLATE_PATH.exists():
@@ -783,16 +965,32 @@ if TEMPLATE_PATH.exists():
         width="stretch",
     )
 
-active_data = SAMPLE_DATA
+active_data = SAMPLE_DATA.copy()
+active_materials = SAMPLE_MATERIALS.copy()
 source_id = "demonstrative-data"
 source_badge = "● Dados demonstrativos"
+material_sheet_name = "Materiais demonstrativos"
 
 if uploaded_file is not None:
     try:
         uploaded_bytes = uploaded_file.getvalue()
-        active_data, invalid_yield_count = read_uploaded_excel(uploaded_bytes)
+        (
+            active_data,
+            invalid_yield_count,
+            uploaded_materials,
+            material_sheet_name,
+        ) = read_uploaded_excel(uploaded_bytes)
         source_id = hashlib.sha256(uploaded_bytes).hexdigest()[:12]
         source_badge = "● Arquivo importado"
+        if uploaded_materials is not None:
+            active_materials = uploaded_materials
+        elif "gid" in active_data.columns:
+            fallback_columns = [
+                column for column in ["gid", "germplasm_name", "company_name"]
+                if column in active_data.columns
+            ]
+            active_materials = active_data[fallback_columns].drop_duplicates("gid")
+            material_sheet_name = None
         st.sidebar.success(
             f"{uploaded_file.name}: {len(active_data):,} linhas".replace(",", ".")
         )
@@ -800,8 +998,19 @@ if uploaded_file is not None:
             st.sidebar.warning(
                 f"{invalid_yield_count} valor(es) de yield não numérico(s) foram tratados como ausentes."
             )
+        if uploaded_materials is None:
+            st.sidebar.warning(
+                "A segunda aba não foi encontrada. O seletor usará apenas os GIDs da primeira aba."
+            )
     except Exception as exc:
         st.sidebar.error(f"Não foi possível importar o arquivo: {exc}")
+
+if "gid" in active_data.columns:
+    active_data["gid"] = normalize_gid_series(active_data["gid"])
+if "gid" in active_materials.columns:
+    active_materials["gid"] = normalize_gid_series(active_materials["gid"])
+    active_materials = active_materials.dropna(subset=["gid"])
+    active_materials = active_materials.drop_duplicates("gid").reset_index(drop=True)
 
 if st.session_state.get("active_source_id") != source_id:
     st.session_state["active_source_id"] = source_id
@@ -810,14 +1019,130 @@ if st.session_state.get("active_source_id") != source_id:
 st.sidebar.markdown(
     """
     <div class="sidebar-section">
-        <span>Filtros</span>
-        <strong>Segmentação dos dados</strong>
+        <span>Cenários</span>
+        <strong>Abrir filtros salvos</strong>
     </div>
     """,
     unsafe_allow_html=True,
 )
 
-filtered_data = active_data
+scenario_file = st.sidebar.file_uploader(
+    "Arquivo de cenário",
+    type=["json"],
+    help="Abra um JSON salvo neste app para restaurar os filtros.",
+    key="scenario_file_uploader",
+)
+if scenario_file is not None:
+    try:
+        scenario_bytes = scenario_file.getvalue()
+        scenario_signature = hashlib.sha256(
+            scenario_bytes + source_id.encode("utf-8")
+        ).hexdigest()
+        if st.session_state.get("applied_scenario_signature") != scenario_signature:
+            scenario = json.loads(scenario_bytes.decode("utf-8-sig"))
+            load_scenario_into_state(scenario, source_id)
+            st.session_state["applied_scenario_signature"] = scenario_signature
+            st.session_state["scenario_source_mismatch"] = (
+                scenario.get("source_fingerprint") not in [None, source_id]
+            )
+        st.sidebar.success(f"Cenário aberto: {scenario_file.name}")
+        if st.session_state.get("scenario_source_mismatch"):
+            st.sidebar.info(
+                "O cenário foi criado com outra base. Somente valores existentes serão aplicados."
+            )
+    except Exception as exc:
+        st.sidebar.error(f"Não foi possível abrir o cenário: {exc}")
+else:
+    st.session_state.pop("applied_scenario_signature", None)
+    st.session_state.pop("scenario_source_mismatch", None)
+
+st.sidebar.markdown(
+    """
+    <div class="sidebar-section">
+        <span>Etapa 1</span>
+        <strong>Selecionar genótipos</strong>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+available_materials = active_materials.copy()
+if "gid" in active_data.columns and "gid" in available_materials.columns:
+    data_gids = set(active_data["gid"].dropna())
+    catalog_size = len(available_materials)
+    available_materials = available_materials.loc[
+        available_materials["gid"].isin(data_gids)
+    ].copy()
+    unmatched_materials = catalog_size - len(available_materials)
+else:
+    unmatched_materials = 0
+
+preferred_material_columns = [
+    column for column in MATERIAL_FILTER_LABELS
+    if column in available_materials.columns
+]
+extra_material_columns = [
+    column for column in available_materials.columns
+    if column not in {"gid", *preferred_material_columns}
+    and column not in {"germplasm_name"}
+]
+material_filter_columns = preferred_material_columns + extra_material_columns
+
+material_filter_panel = st.sidebar.expander("Refinar catálogo de materiais")
+filtered_materials = available_materials
+for column in material_filter_columns:
+    filtered_materials, _ = cascading_multiselect(
+        material_filter_panel,
+        filtered_materials,
+        column,
+        MATERIAL_FILTER_LABELS.get(column, column),
+        source_id,
+        key_prefix="material",
+    )
+
+material_labels = material_display_labels(filtered_materials)
+material_gid_options = list(material_labels)
+selected_gid_key = filter_state_key("selected_gids", source_id, "material")
+if selected_gid_key in st.session_state:
+    st.session_state[selected_gid_key] = [
+        gid for gid in st.session_state[selected_gid_key]
+        if gid in material_gid_options
+    ]
+else:
+    st.session_state[selected_gid_key] = []
+
+selected_gids = st.sidebar.multiselect(
+    "Genótipos incluídos",
+    material_gid_options,
+    format_func=lambda gid: material_labels.get(gid, gid),
+    key=selected_gid_key,
+    help="A lista vem da segunda aba e é ligada às observações pela coluna gid. Vazio inclui todos os materiais disponíveis.",
+)
+effective_gids = selected_gids or material_gid_options
+if material_sheet_name:
+    st.sidebar.caption(
+        f"{len(effective_gids)} de {len(available_materials)} materiais disponíveis na base."
+    )
+if unmatched_materials:
+    st.sidebar.caption(
+        f"{unmatched_materials} material(is) do cadastro não têm observações e foram ocultados."
+    )
+
+if "gid" in active_data.columns:
+    filtered_data = active_data.loc[active_data["gid"].isin(effective_gids)].copy()
+else:
+    filtered_data = active_data.copy()
+
+st.sidebar.markdown(
+    """
+    <div class="sidebar-section">
+        <span>Etapa 2</span>
+        <strong>Segmentar observações</strong>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
 filtered_data, _ = cascading_multiselect(
     st.sidebar, filtered_data, "year", "Ano", source_id
 )
@@ -866,15 +1191,6 @@ for column, label in [
         location_panel, filtered_data, column, label, source_id
     )
 
-material_panel = st.sidebar.expander("Material genético")
-for column, label in [
-    ("germplasm_name", "Germoplasma"),
-    ("gid", "GID"),
-]:
-    filtered_data, _ = cascading_multiselect(
-        material_panel, filtered_data, column, label, source_id
-    )
-
 dedicated_filters = {
     "year", "trial_type", "signed_status", "plot_is_discarded",
     "missing_dev_file", "country_name", "macroregion_name",
@@ -893,6 +1209,27 @@ for column in [
 st.session_state["df"] = filtered_data.copy()
 st.sidebar.caption(
     f"Datacut ativo: {len(filtered_data):,} de {len(active_data):,} registros".replace(",", ".")
+)
+
+observation_filter_columns = [
+    column for column, _ in OBSERVATION_FILTERS
+    if column not in {"germplasm_name", "gid"} and column in active_data.columns
+] + [
+    column for column in CATEGORICAL_COLS
+    if column not in dedicated_filters and column in active_data.columns
+]
+scenario = scenario_payload(
+    source_id,
+    material_filter_columns,
+    observation_filter_columns,
+)
+st.sidebar.download_button(
+    "Salvar cenário (JSON)",
+    data=json.dumps(scenario, ensure_ascii=False, indent=2).encode("utf-8"),
+    file_name="cenario_filtros_gdm.json",
+    mime="application/json",
+    width="stretch",
+    help="Salva apenas os filtros e GIDs selecionados; os dados não são incluídos.",
 )
 
 page = st.radio(
