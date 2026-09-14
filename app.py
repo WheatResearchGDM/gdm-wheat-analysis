@@ -14,7 +14,7 @@ import pandas as pd
 import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
-import statsmodels.formula.api as smf
+from analysis import data_fingerprint, fit_trial_model, environmental_data
 from scipy import stats
 
 # ---------------------------------------------------------------------------
@@ -24,7 +24,7 @@ st.set_page_config(
     page_title="GDM Wheat Analysis",
     page_icon="\U0001F33E",
     layout="wide",
-    initial_sidebar_state="expanded",
+    initial_sidebar_state="collapsed",
 )
 
 GDM_NAVY = "#09243B"
@@ -925,66 +925,65 @@ def material_display_labels(
 
 
 def scenario_payload(source_id, material_columns, observation_columns):
-    """Serialize current filters without any uploaded data or credentials."""
-    material_filters = {
-        column: st.session_state.get(
-            filter_state_key(column, source_id, "material"), []
-        )
-        for column in material_columns
+    """Save the live selection, including every datacut and quality filter."""
+    datacut_columns = {
+        "year", "trial_type", "country_name", "macroregion_name", "microregion_name",
+        "state_name", "location_name", TRIAL_LABEL_COLUMN, "condition_file",
     }
     observation_filters = {
-        column: st.session_state.get(filter_state_key(column, source_id), [])
-        for column in observation_columns
+        c: st.session_state.get(filter_state_key(c, source_id), [])
+        for c in observation_columns
     }
     return {
-        "app": "gdm-wheat-analysis",
-        "version": 1,
-        "name": st.session_state.get(f"scenario_name_{source_id}", "Cenário GDM"),
+        "app": "gdm-wheat-analysis", "version": 2,
+        "name": st.session_state.get(f"scenario_name_{source_id}") or "Cenário GDM",
         "saved_at_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "source_fingerprint": source_id,
         "filters": {
-            "material_attributes": material_filters,
+            "material_attributes": {
+                c: st.session_state.get(filter_state_key(c, source_id, "material"), [])
+                for c in material_columns
+            },
             "selected_gids": st.session_state.get(
-                filter_state_key("selected_gids", source_id, "material"), []
-            ),
-            "observations": observation_filters,
+                filter_state_key("selected_gids", source_id, "material"), []),
+            "datacut": {c: v for c, v in observation_filters.items() if c in datacut_columns},
+            "additional": {c: v for c, v in observation_filters.items() if c not in datacut_columns},
         },
     }
 
 
 def load_scenario_into_state(payload, source_id):
-    """Load a versioned scenario into widget state before filters are rendered."""
-    if payload.get("app") != "gdm-wheat-analysis":
+    """Restore v1/v2 scenarios before widgets, replacing previous selections."""
+    if not isinstance(payload, dict) or payload.get("app") != "gdm-wheat-analysis":
         raise ValueError("Este JSON não é um cenário do GDM Wheat Analysis.")
-    if payload.get("version") != 1:
+    if payload.get("version") not in [1, 2]:
         raise ValueError("Versão de cenário não suportada.")
-
     filters = payload.get("filters")
     if not isinstance(filters, dict):
-        raise ValueError("O cenário não contém a seção filters.")
-
-    material_filters = filters.get("material_attributes", {})
-    observation_filters = filters.get("observations", {})
-    selected_gids = filters.get("selected_gids", [])
-    if not isinstance(material_filters, dict) or not isinstance(observation_filters, dict):
-        raise ValueError("Os filtros do cenário têm formato inválido.")
-    if not isinstance(selected_gids, list):
-        raise ValueError("selected_gids precisa ser uma lista.")
-
-    for column, values in material_filters.items():
-        if isinstance(values, list):
-            st.session_state[filter_state_key(column, source_id, "material")] = values
-    for column, values in observation_filters.items():
-        if isinstance(values, list):
-            st.session_state[filter_state_key(column, source_id)] = values
-    st.session_state[
-        filter_state_key("selected_gids", source_id, "material")
-    ] = [normalize_gid_value(value) for value in selected_gids]
-
-
-def queue_scenario_application(payload):
-    """Queue scenario changes so widget state is updated before the next full run."""
-    st.session_state["pending_scenario_apply"] = payload
+        raise ValueError("O cenário não contém filtros válidos.")
+    groups = {name: filters.get(name, {}) for name in
+              ["material_attributes", "observations", "datacut", "additional"]}
+    if any(not isinstance(values, dict) for values in groups.values()):
+        raise ValueError("Formato inválido dos filtros.")
+    if any(not isinstance(v, list) for group in groups.values() for v in group.values()):
+        raise ValueError("As seleções de cada filtro precisam ser listas.")
+    gids = filters.get("selected_gids", [])
+    if not isinstance(gids, list):
+        raise ValueError("A seleção de genótipos precisa ser uma lista.")
+    # Clear old values as well as widget values; an omitted filter must not leak.
+    for key in list(st.session_state):
+        if key.endswith("_" + source_id) and key.startswith(("cascade_", "material_")):
+            del st.session_state[key]
+    for column, values in groups["material_attributes"].items():
+        st.session_state[filter_state_key(column, source_id, "material")] = values
+    observations = {**groups["observations"], **groups["datacut"], **groups["additional"]}
+    for column in CATEGORICAL_COLS + [c for c, _ in OBSERVATION_FILTERS]:
+        if column not in {"gid", "germplasm_name"}:
+            st.session_state[filter_state_key(column, source_id)] = observations.get(column, [])
+    st.session_state[filter_state_key("selected_gids", source_id, "material")] = [
+        normalize_gid_value(gid) for gid in gids
+    ]
+    st.session_state[f"scenario_name_{source_id}"] = str(payload.get("name") or "Cenário GDM")
 
 
 def format_integer(value) -> str:
@@ -1059,541 +1058,181 @@ def show_plot(fig):
 
 
 # ---------------------------------------------------------------------------
-# Sidebar: navigation + filters
+# Workspace: all controls live in Cenários / Datacut (tabs preserve widget state)
 # ---------------------------------------------------------------------------
-st.sidebar.markdown(
-    """
-    <div class="sidebar-brand">
-        <div class="sidebar-brand__mark">GDM</div>
-        <div class="sidebar-brand__title">Wheat Phenotypic Analysis</div>
-        <div class="sidebar-brand__meta">Genética · Dados · Decisão</div>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
-
-nav_labels = {
-    "Cenario": "◎  Cenário",
-    "Dados": "▦  Visão geral",
-    "Índice Ambiental": "⇄  Índice ambiental",
-    "Modelo Misto": "◈  Modelo misto",
-    "Resultados": "↗  Resultados",
-    "Diagnosticos": "⌁  Diagnósticos",
-}
-
-st.sidebar.markdown(
-    """
-    <div class="sidebar-section">
-        <span>Fonte de dados</span>
-        <strong>Importar planilha</strong>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
-
-uploaded_file = st.sidebar.file_uploader(
-    "Arquivo Excel",
-    type=["xlsx"],
-    help="A primeira aba contém as observações. Se houver uma segunda aba, ela será usada como cadastro de materiais ligado pela coluna gid.",
-)
-
-if TEMPLATE_PATH.exists():
-    st.sidebar.download_button(
-        "Baixar template Excel",
-        data=TEMPLATE_PATH.read_bytes(),
-        file_name="template_dados_fenotipicos.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        width="stretch",
-    )
-
-active_data = SAMPLE_DATA.copy()
-active_materials = SAMPLE_MATERIALS.copy()
-source_id = "demonstrative-data"
-source_badge = "● Dados demonstrativos"
-material_sheet_name = "Materiais demonstrativos"
-
-if uploaded_file is not None:
-    try:
-        uploaded_bytes = uploaded_file.getvalue()
-        (
-            active_data,
-            invalid_yield_count,
-            uploaded_materials,
-            material_sheet_name,
-        ) = read_uploaded_excel(uploaded_bytes)
-        source_id = hashlib.sha256(uploaded_bytes).hexdigest()[:12]
-        source_badge = "● Arquivo importado"
-        if uploaded_materials is not None:
-            active_materials = uploaded_materials
-        elif "gid" in active_data.columns:
-            fallback_columns = [
-                column for column in ["gid", "germplasm_name", "company_name"]
-                if column in active_data.columns
-            ]
-            active_materials = active_data[fallback_columns].drop_duplicates("gid")
-            material_sheet_name = None
-        st.sidebar.success(
-            f"{uploaded_file.name}: {len(active_data):,} linhas".replace(",", ".")
-        )
-        if invalid_yield_count:
-            st.sidebar.warning(
-                f"{invalid_yield_count} valor(es) de yield não numérico(s) foram tratados como ausentes."
-            )
-        if uploaded_materials is None:
-            st.sidebar.warning(
-                "A segunda aba não foi encontrada. O seletor usará apenas os GIDs da primeira aba."
-            )
-    except Exception as exc:
-        st.sidebar.error(f"Não foi possível importar o arquivo: {exc}")
-
-if "gid" in active_data.columns:
-    active_data["gid"] = normalize_gid_series(active_data["gid"])
-if "gid" in active_materials.columns:
-    active_materials["gid"] = normalize_gid_series(active_materials["gid"])
-    active_materials = active_materials.dropna(subset=["gid"])
-    active_materials = active_materials.drop_duplicates("gid").reset_index(drop=True)
-
-if st.session_state.get("active_source_id") != source_id:
-    st.session_state["active_source_id"] = source_id
-    st.session_state["df"] = active_data.copy()
-
-st.sidebar.markdown(
-    """
-    <div class="sidebar-section">
-        <span>Cenários</span>
-        <strong>Abrir filtros salvos</strong>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
-
-scenario_file = st.sidebar.file_uploader(
-    "Arquivo de cenário",
-    type=["json"],
-    help="Abra um JSON salvo neste app para restaurar os filtros.",
-    key="scenario_file_uploader",
-)
-if scenario_file is not None:
-    try:
-        scenario_bytes = scenario_file.getvalue()
-        scenario_signature = hashlib.sha256(
-            scenario_bytes + source_id.encode("utf-8")
-        ).hexdigest()
-        if st.session_state.get("applied_scenario_signature") != scenario_signature:
-            scenario = json.loads(scenario_bytes.decode("utf-8-sig"))
-            load_scenario_into_state(scenario, source_id)
-            st.session_state["applied_scenario_signature"] = scenario_signature
-            st.session_state["scenario_source_mismatch"] = (
-                scenario.get("source_fingerprint") not in [None, source_id]
-            )
-        st.sidebar.success(f"Cenário aberto: {scenario_file.name}")
-        if st.session_state.get("scenario_source_mismatch"):
-            st.sidebar.info(
-                "O cenário foi criado com outra base. Somente valores existentes serão aplicados."
-            )
-    except Exception as exc:
-        st.sidebar.error(f"Não foi possível abrir o cenário: {exc}")
-else:
-    st.session_state.pop("applied_scenario_signature", None)
-    st.session_state.pop("scenario_source_mismatch", None)
-
-st.sidebar.markdown(
-    """
-    <div class="sidebar-section">
-        <span>Cenário ativo</span>
-        <strong>Genótipos da análise</strong>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
-
-available_materials = active_materials.copy()
-if "gid" in active_data.columns and "gid" in available_materials.columns:
-    data_gids = set(active_data["gid"].dropna())
-    catalog_size = len(available_materials)
-    available_materials = available_materials.loc[
-        available_materials["gid"].isin(data_gids)
-    ].copy()
-    unmatched_materials = catalog_size - len(available_materials)
-else:
-    unmatched_materials = 0
-
-material_filter_columns = []
-material_labels = material_display_labels(available_materials, active_data)
-material_gid_options = list(material_labels)
-selected_gid_key = filter_state_key("selected_gids", source_id, "material")
-
-pending_scenario = st.session_state.pop("pending_scenario_apply", None)
-if pending_scenario and pending_scenario.get("source_id") == source_id:
-    st.session_state[selected_gid_key] = pending_scenario.get("selected_gids", [])
-    for column, values in pending_scenario.get("observations", {}).items():
-        st.session_state[filter_state_key(column, source_id)] = values
-    st.session_state[f"scenario_name_{source_id}"] = pending_scenario.get(
-        "name", "Cenário GDM"
-    )
-    st.session_state["top_navigation"] = "Dados"
-    st.session_state["scenario_applied_message"] = True
-
-st.session_state.setdefault(selected_gid_key, [])
-st.session_state[selected_gid_key] = [
-    gid for gid in st.session_state[selected_gid_key]
-    if gid in material_gid_options
-]
-selected_gids = st.session_state[selected_gid_key]
-effective_gids = selected_gids or material_gid_options
-selection_description = (
-    f"{len(selected_gids)} genótipo(s) selecionado(s)"
-    if selected_gids
-    else f"Todos os {len(material_gid_options)} genótipos disponíveis"
-)
-st.sidebar.caption(selection_description)
-if unmatched_materials:
-    st.sidebar.caption(
-        f"{unmatched_materials} material(is) do cadastro não têm observações e foram ocultados."
-    )
-if st.sidebar.button("Configurar cenário", width="stretch", key="open_scenario_page"):
-    st.session_state["refresh_scenario_draft"] = source_id
-    st.session_state["top_navigation"] = "Cenario"
-if st.session_state.pop("scenario_applied_message", False):
-    st.sidebar.success("Cenário aplicado ao datacut.")
-
-if "gid" in active_data.columns:
-    filtered_data = active_data.loc[active_data["gid"].isin(effective_gids)].copy()
-else:
-    filtered_data = active_data.copy()
-
-st.sidebar.markdown(
-    """
-    <div class="sidebar-section">
-        <span>Etapa 2</span>
-        <strong>Segmentar observações</strong>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
-
-filtered_data, _ = cascading_multiselect(
-    st.sidebar, filtered_data, "year", "Ano", source_id
-)
-filtered_data, _ = cascading_multiselect(
-    st.sidebar, filtered_data, "trial_type", "Tipo de ensaio", source_id
-)
-filtered_data, _ = cascading_multiselect(
-    st.sidebar, filtered_data, "signed_status", "Status", source_id
-)
-
-st.sidebar.markdown(
-    """
-    <div class="sidebar-section">
-        <span>Qualidade</span>
-        <strong>Elegibilidade dos registros</strong>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
-filtered_data, _ = cascading_multiselect(
-    st.sidebar,
-    filtered_data,
-    "plot_is_discarded",
-    "Parcela descartada",
-    source_id,
-    DEFAULT_FILTER_VALUES["plot_is_discarded"],
-)
-filtered_data, _ = cascading_multiselect(
-    st.sidebar,
-    filtered_data,
-    "missing_dev_file",
-    "Missing no arquivo DEV",
-    source_id,
-    DEFAULT_FILTER_VALUES["missing_dev_file"],
-)
-
-location_panel = st.sidebar.expander("Localização")
-for column, label in [
-    ("country_name", "País"),
-    ("macroregion_name", "Macrorregião"),
-    ("microregion_name", "Microrregião"),
-    ("state_name", "Estado"),
-    ("location_name", "Local"),
-    (TRIAL_LABEL_COLUMN, TRIAL_DISPLAY_LABEL),
-]:
-    filtered_data, _ = cascading_multiselect(
-        location_panel, filtered_data, column, label, source_id
-    )
-
-dedicated_filters = {
-    "year", "trial_type", "signed_status", "plot_is_discarded",
-    "missing_dev_file", "country_name", "macroregion_name",
-    "microregion_name", "state_name", "location_name", TRIAL_LABEL_COLUMN,
-    "germplasm_name", "gid",
-}
-other_panel = st.sidebar.expander("Outros")
-for column in [
-    candidate for candidate in CATEGORICAL_COLS
-    if candidate not in dedicated_filters and candidate in active_data.columns
-]:
-    filtered_data, _ = cascading_multiselect(
-        other_panel, filtered_data, column, column, source_id
-    )
-
-st.session_state["df"] = filtered_data.copy()
-st.sidebar.caption(
-    f"Datacut ativo: {len(filtered_data):,} de {len(active_data):,} registros".replace(",", ".")
-)
-
-observation_filter_columns = [
-    column for column, _ in OBSERVATION_FILTERS
-    if column not in {"germplasm_name", "gid"} and column in active_data.columns
-] + [
-    column for column in CATEGORICAL_COLS
-    if column not in dedicated_filters and column in active_data.columns
-]
-scenario = scenario_payload(
-    source_id,
-    material_filter_columns,
-    observation_filter_columns,
-)
-scenario_file_stem = "".join(
-    character if character.isalnum() or character in {"-", "_"} else "_"
-    for character in str(scenario.get("name") or "cenario_filtros_gdm")
-).strip("_") or "cenario_filtros_gdm"
-st.sidebar.download_button(
-    "Salvar cenário (JSON)",
-    data=json.dumps(scenario, ensure_ascii=False, indent=2).encode("utf-8"),
-    file_name=f"{scenario_file_stem}.json",
-    mime="application/json",
-    width="stretch",
-    help="Salva apenas os filtros e GIDs selecionados; os dados não são incluídos.",
-)
-
-page = st.radio(
-    "Navegação",
-    list(nav_labels),
-    format_func=nav_labels.get,
-    horizontal=True,
-    label_visibility="collapsed",
-    key="top_navigation",
-)
-
 st.markdown(
-    f"""
-    <div class="gdm-hero">
-        <div class="gdm-hero__copy">
-            <div class="gdm-eyebrow">GDM · Research Analytics</div>
-            <h1>Wheat Phenotypic Analysis</h1>
-            <p>Explore ensaios, compare germoplasmas e transforme dados fenotípicos em decisões de melhoramento mais claras.</p>
-        </div>
-        <div class="gdm-hero__badge"><span>{html.escape(source_badge)}</span></div>
-    </div>
-    """,
+    '<div class="gdm-eyebrow">GDM · Wheat Research</div>',
     unsafe_allow_html=True,
 )
+pages = st.tabs([
+    "◎ Cenários / Datacut", "▦ Visão geral", "⇄ Índice ambiental",
+    "◈ Modelo · BLUE / BLUP", "↗ Resultados", "⌁ Diagnósticos",
+])
 
-# ---------------------------------------------------------------------------
-# Page: Cenario
-# ---------------------------------------------------------------------------
-if page == "Cenario":
-    st.markdown(
-        """
-        <div class="scenario-heading">
-            <div class="scenario-heading__eyebrow">Configuração do datacut</div>
-            <h2>Criar ou ajustar cenário</h2>
-            <p>Escolha os ambientes e os genótipos antes de iniciar as análises. Os nomes vêm de <strong>germplasm_name</strong>; o vínculo entre as abas usa <strong>gid</strong>.</p>
-        </div>
-        """,
-        unsafe_allow_html=True,
+with pages[0]:
+    render_page_intro(
+        "Configuração", "Cenários / Datacut",
+        "Defina os materiais e os ensaios. As seleções são aplicadas imediatamente a todas as análises.",
     )
+    with st.expander("Arquivo de dados e template", expanded=True):
+        upload_column, template_column = st.columns([3, 1])
+        uploaded_file = upload_column.file_uploader(
+            "Arquivo Excel", type=["xlsx"],
+            help="Primeira aba: observações. Segunda aba: cadastro de materiais, vinculado por gid.",
+        )
+        if TEMPLATE_PATH.exists():
+            template_column.download_button(
+                "Baixar template Excel", TEMPLATE_PATH.read_bytes(),
+                "template_dados_fenotipicos.xlsx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                width="stretch",
+            )
+    active_data = SAMPLE_DATA.copy()
+    active_materials = SAMPLE_MATERIALS.copy()
+    source_id = "demonstrative-data"
+    source_badge = "Dados demonstrativos"
+    if uploaded_file is not None:
+        try:
+            uploaded_bytes = uploaded_file.getvalue()
+            active_data, invalid_yield_count, uploaded_materials, _ = read_uploaded_excel(uploaded_bytes)
+            source_id = hashlib.sha256(uploaded_bytes).hexdigest()[:12]
+            source_badge = uploaded_file.name
+            if "gid" not in active_data:
+                active_data["gid"] = active_data["germplasm_name"]
+            active_materials = uploaded_materials if uploaded_materials is not None else (
+                active_data[["gid", "germplasm_name"]].drop_duplicates("gid")
+            )
+            if invalid_yield_count:
+                st.warning(f"{invalid_yield_count} valor(es) de produtividade inválido(s) serão omitidos.")
+        except Exception as exc:
+            st.error(f"Não foi possível importar o arquivo: {exc}")
+            st.stop()
 
-    draft_prefix = f"scenario_draft_{source_id}_"
-    if st.session_state.pop("refresh_scenario_draft", None) == source_id:
-        for state_key in list(st.session_state):
-            if state_key.startswith(draft_prefix):
-                st.session_state.pop(state_key, None)
-
-    applied_years = st.session_state.get(filter_state_key("year", source_id), [])
-    applied_microregions = st.session_state.get(
-        filter_state_key("microregion_name", source_id), []
-    )
-    applied_conditions = st.session_state.get(
-        filter_state_key("condition_file", source_id), []
-    )
-
-    name_key = f"scenario_name_{source_id}"
-    st.session_state.setdefault(name_key, "Novo cenário")
-    st.session_state.setdefault(f"{draft_prefix}years", applied_years)
-    st.session_state.setdefault(f"{draft_prefix}microregions", applied_microregions)
-    st.session_state.setdefault(f"{draft_prefix}conditions", applied_conditions)
-    st.session_state.setdefault(f"{draft_prefix}mode", "Categoria")
+    active_data["gid"] = normalize_gid_series(active_data["gid"])
+    active_materials["gid"] = normalize_gid_series(active_materials["gid"])
+    available_materials = active_materials.dropna(subset=["gid"]).drop_duplicates("gid")
+    available_materials = available_materials.loc[
+        available_materials["gid"].isin(active_data["gid"].dropna())
+    ].copy()
+    st.caption(f"{source_badge} · {format_integer(len(active_data))} parcelas")
 
     with st.container(border=True):
-        st.text_input(
-            "Nome do cenário",
-            key=name_key,
-            placeholder="Ex.: BRA_VCU_2026",
-            help="O nome também será usado no arquivo JSON baixado.",
+        section_label("1 · Cenário — identificação e materiais")
+        scenario_file = st.file_uploader(
+            "Abrir cenário e datacut (JSON)", type=["json"], key="scenario_file_uploader",
         )
-
-        cut_col1, cut_col2 = st.columns(2)
-        with cut_col1:
-            scenario_years = st.multiselect(
-                "Anos",
-                filter_options(active_data, "year"),
-                key=f"{draft_prefix}years",
-            )
-        with cut_col2:
-            scenario_microregions = st.multiselect(
-                "Microrregiões",
-                filter_options(active_data, "microregion_name"),
-                key=f"{draft_prefix}microregions",
-            )
-
-        st.markdown("#### Selecionar genótipos por")
-        selection_mode = st.radio(
-            "Critério para organizar os genótipos",
-            ["Categoria", "Ciclo"],
-            horizontal=True,
-            label_visibility="collapsed",
-            key=f"{draft_prefix}mode",
-        )
-
-        selected_scenario_gids = []
-        if selection_mode == "Categoria" and "category" in available_materials.columns:
-            categorized_materials = available_materials.copy()
-            categorized_materials["_category"] = (
-                categorized_materials["category"]
-                .fillna(NULL_FILTER_VALUE)
-                .astype(str)
-                .str.strip()
-                .str.upper()
-            )
-            standard_categories = [
-                ("COMERCIAL", "Comerciais"),
-                ("CHECK", "Checks"),
-                ("EXPERIMENTAL", "Experimentais"),
-            ]
-            rendered_groups = []
-            known_categories = {value for value, _ in standard_categories}
-            for category_value, category_label in standard_categories:
-                category_gids = categorized_materials.loc[
-                    categorized_materials["_category"] == category_value,
-                    "gid",
-                ].tolist()
-                if category_gids:
-                    rendered_groups.append(
-                        (category_value, category_label, category_gids)
-                    )
-            other_gids = categorized_materials.loc[
-                ~categorized_materials["_category"].isin(known_categories),
-                "gid",
-            ].tolist()
-            if other_gids:
-                rendered_groups.append(("OUTROS", "Outros", other_gids))
-
-            group_columns = st.columns(max(1, len(rendered_groups)))
-            for group_column, (category_value, category_label, category_gids) in zip(
-                group_columns, rendered_groups
-            ):
-                category_key = f"{draft_prefix}category_{category_value}"
-                st.session_state.setdefault(
-                    category_key,
-                    [gid for gid in selected_gids if gid in category_gids],
-                )
-                st.session_state[category_key] = [
-                    gid for gid in st.session_state[category_key]
-                    if gid in category_gids
-                ]
-                with group_column:
-                    selected_scenario_gids.extend(
-                        st.multiselect(
-                            category_label,
-                            category_gids,
-                            format_func=lambda gid: material_labels.get(gid, gid),
-                            key=category_key,
-                        )
-                    )
-        elif selection_mode == "Ciclo" and "cycle" in available_materials.columns:
-            cycle_col1, cycle_col2 = st.columns(2)
-            with cycle_col1:
-                selected_cycles = st.multiselect(
-                    "Ciclos",
-                    filter_options(available_materials, "cycle"),
-                    key=f"{draft_prefix}cycles",
-                )
-            cycle_materials = apply_column_filter(
-                available_materials, "cycle", selected_cycles
-            )
-            cycle_gid_options = cycle_materials["gid"].tolist()
-            cycle_genotypes_key = f"{draft_prefix}cycle_genotypes"
-            st.session_state.setdefault(
-                cycle_genotypes_key,
-                [gid for gid in selected_gids if gid in cycle_gid_options],
-            )
-            st.session_state[cycle_genotypes_key] = [
-                gid for gid in st.session_state[cycle_genotypes_key]
-                if gid in cycle_gid_options
-            ]
-            with cycle_col2:
-                cycle_genotypes = st.multiselect(
-                    "Genótipos",
-                    cycle_gid_options,
-                    format_func=lambda gid: material_labels.get(gid, gid),
-                    key=cycle_genotypes_key,
-                )
-            selected_scenario_gids = cycle_genotypes
-            if selected_cycles and not selected_scenario_gids:
-                selected_scenario_gids = cycle_gid_options
+        if scenario_file is not None:
+            try:
+                scenario_bytes = scenario_file.getvalue()
+                signature = hashlib.sha256(scenario_bytes + source_id.encode()).hexdigest()
+                if st.session_state.get("applied_scenario_signature") != signature:
+                    saved = json.loads(scenario_bytes.decode("utf-8-sig"))
+                    load_scenario_into_state(saved, source_id)
+                    st.session_state["applied_scenario_signature"] = signature
+                    st.session_state["scenario_source_mismatch"] = saved.get("source_fingerprint") not in [None, source_id]
+                st.success("Cenário e datacut restaurados.")
+                if st.session_state.get("scenario_source_mismatch"):
+                    st.info("A base difere da usada ao salvar. Apenas opções presentes são aplicadas.")
+            except Exception as exc:
+                st.error(f"Não foi possível abrir o cenário: {exc}")
         else:
-            all_genotypes_key = f"{draft_prefix}all_genotypes"
-            st.session_state.setdefault(all_genotypes_key, selected_gids)
-            selected_scenario_gids = st.multiselect(
-                "Genótipos",
-                material_gid_options,
-                format_func=lambda gid: material_labels.get(gid, gid),
-                key=all_genotypes_key,
-            )
-
-        scenario_conditions = st.multiselect(
-            "Condições",
-            filter_options(active_data, "condition_file"),
-            key=f"{draft_prefix}conditions",
+            st.session_state.pop("applied_scenario_signature", None)
+        st.text_input("Nome do cenário", key=f"scenario_name_{source_id}", placeholder="Ex.: BRA_VCU_2026")
+        material_filter_columns = [c for c in MATERIAL_FILTER_LABELS if c in available_materials]
+        material_cut = available_materials.copy()
+        with st.expander("Características dos materiais", expanded=True):
+            material_columns = st.columns(3)
+            for index, column in enumerate(material_filter_columns):
+                material_cut, _ = cascading_multiselect(
+                    material_columns[index % 3], material_cut, column,
+                    MATERIAL_FILTER_LABELS[column], source_id, key_prefix="material",
+                )
+        material_labels = material_display_labels(available_materials, active_data)
+        gid_options = material_cut["gid"].tolist()
+        selected_gid_key = filter_state_key("selected_gids", source_id, "material")
+        st.session_state[selected_gid_key] = [
+            gid for gid in st.session_state.get(selected_gid_key, []) if gid in gid_options
+        ]
+        selected_gids = st.multiselect(
+            "Genótipos incluídos", gid_options,
+            format_func=lambda gid: material_labels.get(gid, gid), key=selected_gid_key,
+            help="Sem seleção individual: inclui todos os materiais que passaram pelos filtros acima.",
         )
+        effective_gids = selected_gids or gid_options
+        filtered_data = active_data.loc[active_data["gid"].isin(effective_gids)].copy()
+        st.caption(f"{len(effective_gids)} genótipo(s) incluído(s).")
 
-        selection_count = len(set(selected_scenario_gids))
-        if selection_count:
-            st.caption(f"{selection_count} genótipo(s) serão incluídos no cenário.")
-        else:
-            st.caption(
-                f"Nenhum genótipo marcado: todos os {len(material_gid_options)} materiais disponíveis serão incluídos."
+    with st.container(border=True):
+        section_label("2 · Datacut — recorte dos ensaios")
+        st.caption("Filtros em cascata: cada escolha limita as opções seguintes.")
+        cut_columns = st.columns(3)
+        datacut_filters = [
+            ("year", "Ano"), ("trial_type", "Tipo de ensaio"),
+            ("country_name", "País"), ("macroregion_name", "Macrorregião"),
+            ("microregion_name", "Microrregião"), ("state_name", "Estado"),
+            ("location_name", "Local"), (TRIAL_LABEL_COLUMN, TRIAL_DISPLAY_LABEL),
+            ("condition_file", "Condição"),
+        ]
+        for index, (column, label) in enumerate(datacut_filters):
+            filtered_data, _ = cascading_multiselect(
+                cut_columns[index % 3], filtered_data, column, label, source_id,
             )
 
-        apply_payload = {
-            "source_id": source_id,
-            "name": st.session_state[name_key],
-            "selected_gids": list(dict.fromkeys(selected_scenario_gids)),
-            "observations": {
-                "year": scenario_years,
-                "microregion_name": scenario_microregions,
-                "condition_file": scenario_conditions,
-            },
-        }
-        action_spacer, action_column = st.columns([3, 1])
-        with action_column:
-            st.button(
-                "Aplicar cenário",
-                type="primary",
-                width="stretch",
-                on_click=queue_scenario_application,
-                args=(apply_payload,),
+    with st.container(border=True):
+        section_label("3 · Demais variáveis e qualidade")
+        quality_filters = [
+            ("plot_is_discarded", "Parcela descartada"),
+            ("missing_dev_file", "Missing no arquivo DEV"), ("signed_status", "Status"),
+        ]
+        quality_columns = st.columns(3)
+        for column_ui, (column, label) in zip(quality_columns, quality_filters):
+            filtered_data, _ = cascading_multiselect(
+                column_ui, filtered_data, column, label, source_id,
+                DEFAULT_FILTER_VALUES.get(column),
             )
+        dedicated_filters = {c for c, _ in datacut_filters + quality_filters} | {"gid", "germplasm_name"}
+        other_filters = [c for c in CATEGORICAL_COLS if c not in dedicated_filters and c in active_data]
+        with st.expander("Outras variáveis"):
+            other_columns = st.columns(3)
+            for index, column in enumerate(other_filters):
+                filtered_data, _ = cascading_multiselect(
+                    other_columns[index % 3], filtered_data, column,
+                    column_display_name(column), source_id,
+                )
+    observation_filter_columns = [
+        c for c, _ in datacut_filters + quality_filters if c in active_data
+    ] + other_filters
+    st.session_state["df"] = filtered_data.copy()
+    st.session_state["active_source_id"] = source_id
+    scenario = scenario_payload(source_id, material_filter_columns, observation_filter_columns)
+    scenario_file_stem = "".join(
+        c if c.isalnum() or c in "-_" else "_" for c in scenario["name"]
+    ).strip("_") or "cenario_gdm"
+    st.download_button(
+        "Salvar cenário + datacut (JSON)",
+        json.dumps(scenario, ensure_ascii=False, indent=2).encode("utf-8"),
+        f"{scenario_file_stem}.json", "application/json", width="stretch",
+        help="Inclui nome, materiais, genótipos, datacut e demais filtros selecionados.",
+    )
+    st.success(
+        f"Datacut ativo: {format_integer(len(filtered_data))} parcelas · "
+        f"{filtered_data[TRIAL_KEY_COLUMN].nunique()} ensaios · "
+        f"{filtered_data['germplasm_name'].nunique()} genótipos"
+    )
+
+current_signature = data_fingerprint(filtered_data)
+if "analysis" in st.session_state and st.session_state["analysis"]["signature"] != current_signature:
+    st.session_state.pop("analysis")
+    st.session_state["analysis_invalidated"] = True
 
 # ---------------------------------------------------------------------------
 # Page: Dados
 # ---------------------------------------------------------------------------
-if page == "Dados":
+with pages[1]:
     render_page_intro(
         "Visão geral",
         "Dados fenotípicos · Trigo",
-        "Resumo executivo da base ativa após a aplicação dos filtros laterais.",
+        "Resumo da base após os filtros selecionados em Cenários / Datacut.",
     )
     df = st.session_state["df"]
     c1, c2, c3, c4 = st.columns(4)
@@ -1616,18 +1255,16 @@ if page == "Dados":
 
     if not df.empty and {"yield", TRIAL_LABEL_COLUMN}.issubset(df.columns):
         section_label("Panorama da seleção")
-        chart_left, chart_right = st.columns([1.15, 1], gap="large")
-        with chart_left:
-            yield_fig = px.histogram(
-                df,
-                x="yield",
-                nbins=32,
-                title="Distribuição de produtividade",
-                labels={"yield": "Produtividade"},
-                color_discrete_sequence=[GDM_LIME],
-            )
-            show_plot(yield_fig)
-        with chart_right:
+        yield_fig = px.histogram(
+            df,
+            x="yield",
+            nbins=32,
+            title="Distribuição de produtividade",
+            labels={"yield": "Produtividade"},
+            color_discrete_sequence=[GDM_LIME],
+        )
+        show_plot(yield_fig)
+        with st.container(height=640, border=True):
             location_yield = (
                 df.groupby([TRIAL_KEY_COLUMN, TRIAL_LABEL_COLUMN], as_index=False)["yield"]
                 .mean()
@@ -1654,7 +1291,7 @@ if page == "Dados":
                 tickvals=location_yield[TRIAL_KEY_COLUMN].tolist(),
                 ticktext=location_yield[TRIAL_LABEL_COLUMN].tolist(),
             )
-            location_fig.update_layout(height=min(900, max(420, 25 * len(location_yield))))
+            location_fig.update_layout(height=max(480, 30 * len(location_yield)))
             show_plot(location_fig)
 
     section_label("Base filtrada")
@@ -1679,16 +1316,34 @@ if page == "Dados":
 # ---------------------------------------------------------------------------
 # Page: Environmental index head-to-head
 # ---------------------------------------------------------------------------
-elif page == "Índice Ambiental":
+with pages[2]:
     render_page_intro(
         "Comparação head-to-head",
         "Índice ambiental de produtividade",
         "Compare dois genótipos nos ambientes em que ambos foram avaliados.",
     )
     df = st.session_state["df"].copy()
-    required = {
-        TRIAL_KEY_COLUMN, TRIAL_LABEL_COLUMN, "germplasm_name", "yield"
-    }
+    value_source = st.radio(
+        "Valores do índice ambiental", ["Preditos (BLUE / BLUP)", "Dados brutos"],
+        horizontal=True, key="environment_value_source",
+    )
+    fitted_analysis = st.session_state.get("analysis")
+    prediction_ready = (
+        fitted_analysis is not None and fitted_analysis["response"] == "yield"
+        and fitted_analysis["signature"] == current_signature
+    )
+    use_predicted = value_source == "Preditos (BLUE / BLUP)"
+    if use_predicted and not prediction_ready:
+        st.info("Calcule BLUE ou BLUP para yield na aba Modelo · BLUE / BLUP com o datacut atual. "
+                "Para explorar antes do ajuste, selecione Dados brutos.")
+        df = df.iloc[:0]
+    else:
+        df = environmental_data(df, fitted_analysis if use_predicted else None)
+        df[TRIAL_KEY_COLUMN] = df[TRIAL_LABEL_COLUMN]
+        if use_predicted:
+            st.caption(f"Predições do ajuste {fitted_analysis['method']} · "
+                       f"{fitted_analysis['nobs']} parcelas usadas no ajuste.")
+    required = {TRIAL_KEY_COLUMN, TRIAL_LABEL_COLUMN, "germplasm_name", "yield"}
 
     if not required.issubset(df.columns):
         missing = ", ".join(sorted(required.difference(df.columns)))
@@ -1704,7 +1359,9 @@ elif page == "Índice Ambiental":
         comparison_data["germplasm_name"] = comparison_data["germplasm_name"].astype(str)
         genotypes = sorted(comparison_data["germplasm_name"].unique().tolist())
 
-        if len(genotypes) < 2:
+        if use_predicted and not prediction_ready:
+            pass
+        elif len(genotypes) < 2:
             st.warning(
                 "O datacut precisa conter pelo menos dois genótipos com produtividade válida."
             )
@@ -1802,9 +1459,11 @@ elif page == "Índice Ambiental":
                     )
 
                     st.info(
-                        "A média ambiental no eixo X usa todos os genótipos disponíveis em cada "
-                        "ensaio após os filtros. O eixo Y mostra a produtividade média de cada "
-                        "genótipo selecionado no mesmo ambiente."
+                        "O eixo X é a média dos genótipos disponíveis em cada ensaio, com peso igual "
+                        "por genótipo. O eixo Y usa " + (
+                            "a predição ajustada por genótipo × ensaio. " if use_predicted else
+                            "a média bruta das parcelas por genótipo × ensaio. "
+                        ) + "A comparação inclui apenas ensaios com ambos os genótipos."
                     )
                     section_label("Desempenho por ambiente")
 
@@ -1878,7 +1537,7 @@ elif page == "Índice Ambiental":
                     fig.update_layout(
                         title="Produtividade dos genótipos × média ambiental",
                         xaxis_title="Média ambiental por ensaio",
-                        yaxis_title="Produtividade média do genótipo",
+                        yaxis_title="Produtividade predita" if use_predicted else "Produtividade média bruta",
                         hovermode="closest",
                     )
                     show_plot(fig)
@@ -1920,345 +1579,160 @@ elif page == "Índice Ambiental":
                     st.download_button(
                         "Baixar comparação CSV",
                         comparison_table.to_csv(index=False),
-                        "indice_ambiental_head_to_head.csv",
+                        "indice_ambiental_predito.csv" if use_predicted else "indice_ambiental_bruto.csv",
                         "text/csv",
                     )
 
 # ---------------------------------------------------------------------------
 # Page: Modelo Misto
 # ---------------------------------------------------------------------------
-elif page == "Modelo Misto":
+with pages[3]:
     render_page_intro(
-        "Modelagem",
-        "Especificação do modelo misto",
-        "Defina a variável resposta e combine efeitos fixos e aleatórios para o ajuste REML.",
+        "Modelagem", "Calcular BLUE e BLUP",
+        "A escolha do efeito de genótipo determina a estimativa. Ensaio = nome do ensaio | local.",
     )
-    if "df" not in st.session_state or st.session_state["df"].empty:
-        st.warning("Carregue os dados primeiro na aba **Dados**.")
+    df = st.session_state["df"].copy()
+    if df.empty:
+        st.warning("Selecione um datacut com observações.")
     else:
-        df = st.session_state["df"].copy()
-        num_cols = [
-            column for column in df.select_dtypes(include=[np.number]).columns
-            if column not in MODEL_HIDDEN_COLUMNS
-        ]
-        cat_cols = [
-            column
-            for column in df.select_dtypes(include=["object", "string", "category"]).columns
-            if column not in MODEL_HIDDEN_COLUMNS
-        ]
-        all_cols = num_cols + cat_cols
-
-        section_label("Estrutura do modelo")
-        response = st.selectbox(
-            "Variavel dependente (numerica)",
-            num_cols,
-            index=num_cols.index("yield") if "yield" in num_cols else 0,
-            format_func=column_display_name,
+        numeric = [c for c in df.select_dtypes(include=[np.number]).columns
+                   if c not in MODEL_HIDDEN_COLUMNS and c not in {"gid", "trial_number"}]
+        response = st.selectbox("Variável resposta", numeric,
+                                index=numeric.index("yield") if "yield" in numeric else 0)
+        genotype_mode = st.radio(
+            "Efeito de genótipo", ["Fixo → BLUE", "Aleatório → BLUP"],
+            index=1, horizontal=True,
         )
-
-        effects_left, effects_right = st.columns(2, gap="large")
-        with effects_left:
-            st.subheader("Efeitos fixos")
+        method = "BLUE" if genotype_mode.startswith("Fixo") else "BLUP"
+        selectable = [c for c in CATEGORICAL_COLS if c in df and c != "germplasm_name"
+                      and c != "gid" and df[c].nunique() > 1]
+        numeric_effects = [c for c in numeric if c != response and df[c].nunique() > 1]
+        fixed_column, random_column = st.columns(2)
+        with fixed_column:
             fixed = st.multiselect(
-                "Selecione efeitos fixos",
-                [c for c in all_cols if c != response],
+                "Demais efeitos fixos", list(dict.fromkeys(selectable + numeric_effects)),
+                default=[TRIAL_LABEL_COLUMN] if TRIAL_LABEL_COLUMN in selectable else [],
                 format_func=column_display_name,
-                help="Variáveis categóricas são tratadas como fatores (C()).",
             )
-        with effects_right:
-            st.subheader("Efeitos aleatórios")
+        with random_column:
             random_eff = st.multiselect(
-                "Selecione efeitos aleatórios",
-                [c for c in cat_cols if c != response and c not in fixed],
+                "Demais efeitos aleatórios", [c for c in selectable if c not in fixed],
                 format_func=column_display_name,
-                help=(
-                    "O primeiro será o agrupamento principal. Ex.: germplasm_name, "
-                    "Ensaio | Local."
-                ),
+                help="Fatores cruzados. Para repetição/bloco, crie uma coluna com ensaio | repetição.",
             )
-
-        # Preview
-        if response and fixed and random_eff:
-            readable_fixed = " + ".join(column_display_name(value) for value in fixed)
-            readable_random = ", ".join(column_display_name(value) for value in random_eff)
-            st.code(
-                f"{column_display_name(response)} ~ {readable_fixed}  |  random: {readable_random}",
-                language="r",
-            )
-
-        # Warn large cardinality
-        for re in random_eff:
-            n_levels = df[re].nunique()
-            if n_levels > 2000:
-                st.warning(f"{re} tem {n_levels:,} niveis - pode ser lento.")
-
-        if st.button("Ajustar Modelo", type="primary", width="stretch"):
-            if not fixed:
-                st.error("Selecione ao menos um efeito fixo.")
-            elif not random_eff:
-                st.error("Selecione ao menos um efeito aleatorio.")
-            else:
-                with st.spinner("Ajustando modelo misto (REML)..."):
-                    try:
-                        keep = [response] + fixed + random_eff
-                        dm = df[keep].dropna(subset=[response]).copy()
-                        dm[response] = pd.to_numeric(dm[response], errors="coerce")
-                        dm = dm.dropna(subset=[response])
-                        if len(dm) < 20:
-                            st.error(f"Apenas {len(dm)} obs apos remover NAs. Minimo 20.")
-                        else:
-                            # Build formula
-                            # Patsy, usado pelo statsmodels, exige Q() para nomes que também
-                            # são palavras reservadas do Python, como a coluna "yield".
-                            terms = [f'C(Q("{f}"))' if f in cat_cols else f'Q("{f}")' for f in fixed]
-                            formula = f'Q("{response}") ~ {" + ".join(terms)}'
-                            primary_re = random_eff[0]
-                            vc = {}
-                            for rv in random_eff[1:]:
-                                vc[rv] = f'0 + C(Q("{rv}"))'
-                            model = smf.mixedlm(
-                                formula, dm,
-                                groups=dm[primary_re],
-                                vc_formula=vc if vc else None,
-                            )
-                            res = model.fit(reml=True)
-                            st.session_state["mres"] = res
-                            st.session_state["mdata"] = dm
-                            st.session_state["mresp"] = response
-                            st.session_state["mprimary"] = primary_re
-                            st.session_state["mrandom"] = random_eff
-                            st.success("Modelo ajustado! Va para **Resultados** e **Diagnosticos**.")
-                    except Exception as exc:
-                        st.error(f"Erro: {exc}")
-
+        include_gxe = st.checkbox("Incluir interação genótipo × ensaio (aleatória)", value=True)
+        st.caption(
+            "BLUE: médias ajustadas com genótipo fixo. BLUP: médias preditas com genótipo aleatório "
+            "e efeito genotípico separado. As médias gerais dão peso igual aos ensaios; "
+            "as predições do índice ambiental são específicas de cada genótipo × ensaio observado."
+        )
+        if not include_gxe:
+            st.info("Sem interação, o modelo é aditivo: a diferença ajustada entre dois genótipos "
+                    "é constante entre ensaios.")
+        if st.session_state.get("analysis_invalidated"):
+            st.info("O datacut mudou. Calcule novamente para atualizar predições e resultados.")
+        if st.button(f"Calcular {method}", type="primary", width="stretch"):
+            with st.spinner(f"Calculando {method} e predições por ensaio…"):
+                try:
+                    analysis = fit_trial_model(
+                        df, response=response, method=method, fixed=fixed,
+                        random=random_eff, interaction=include_gxe,
+                    )
+                    st.session_state["analysis"] = analysis
+                    st.session_state["analysis_invalidated"] = False
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"Não foi possível ajustar: {exc}")
+        if "analysis" in st.session_state:
+            saved_fit = st.session_state["analysis"]
+            st.success(f"{saved_fit['method']} calculado para {saved_fit['response']} · "
+                       f"{saved_fit['nobs']} parcelas. Consulte Resultados e Índice ambiental.")
+            if saved_fit["omitted"]:
+                st.warning(f"{saved_fit['omitted']} parcela(s) excluída(s) por valores ausentes "
+                           "ou não finitos nas variáveis do modelo.")
+            if saved_fit["warnings"]:
+                with st.expander("Avisos do ajuste"):
+                    for message in saved_fit["warnings"]:
+                        st.write(message)
 # ---------------------------------------------------------------------------
 # Page: Resultados
 # ---------------------------------------------------------------------------
-elif page == "Resultados":
-    render_page_intro(
-        "Pós-análise",
-        "Resultados do modelo misto",
-        "Componentes de variância, BLUPs, herdabilidade e ranking em uma única leitura.",
-    )
-    if "mres" not in st.session_state:
-        st.warning("Ajuste um modelo primeiro.")
+with pages[4]:
+    render_page_intro("Estimativas", "Resultados · BLUE / BLUP",
+                      "Médias ajustadas, predições por ensaio e componentes de variância.")
+    analysis = st.session_state.get("analysis")
+    if analysis is None:
+        st.info("Calcule BLUE ou BLUP na aba Modelo com o datacut atual.")
     else:
-        res = st.session_state["mres"]
-        dm = st.session_state["mdata"]
-        resp = st.session_state["mresp"]
-        primary = st.session_state["mprimary"]
-        randoms = st.session_state["mrandom"]
-
-        t1, t2, t3, t4, t5 = st.tabs(
-            ["▤ Resumo", "◔ Variância", "◈ BLUPs", "◎ Herdabilidade", "↗ Ranking"]
-        )
-
-        # --- Resumo ---
-        with t1:
-            st.subheader("Resumo")
-            st.text(str(res.summary()))
-            c1, c2, c3 = st.columns(3)
-            aic = -2 * res.llf + 2 * len(res.params)
-            c1.metric("Log-Likelihood", f"{res.llf:.2f}")
-            c2.metric("AIC", f"{aic:.2f}")
-            c3.metric("Observacoes", f"{int(res.nobs):,}")
-
-        # --- Variancia ---
-        with t2:
-            st.subheader("Componentes de Variancia")
-            var_rows = []
-            # primary RE
-            gv = float(res.cov_re.iloc[0, 0]) if hasattr(res.cov_re, "iloc") else float(res.cov_re)
-            var_rows.append({
-                "Componente": f"{column_display_name(primary)} (grupo)",
-                "Variancia": gv,
+        result_tabs = st.tabs(["Genótipos e ranking", "Predições por ensaio", "Variâncias", "Resumo"])
+        with result_tabs[0]:
+            estimates = analysis["genotypes"]
+            st.dataframe(estimates, width="stretch", hide_index=True)
+            st.caption(
+                "Estimativa: média sobre os ensaios com pesos iguais e a mesma distribuição "
+                "dos demais efeitos fixos para todos os genótipos. Interações aleatórias e "
+                "outros efeitos aleatórios têm média zero na estimativa geral."
+            )
+            if analysis["method"] == "BLUP":
+                st.caption("Efeito genotípico: desvio aleatório (BLUP), separado da produtividade predita.")
+            top_n = st.number_input("Número de genótipos no gráfico", min_value=1,
+                                    max_value=len(estimates), value=min(20, len(estimates)))
+            rank_fig = px.bar(
+                estimates.head(top_n).sort_values("Estimativa"),
+                x="Estimativa", y="germplasm_name", orientation="h",
+                labels={"Estimativa": f"{analysis['method']} · {analysis['response']}",
+                        "germplasm_name": "Genótipo"},
+                title=f"Ranking por {analysis['method']}", color_discrete_sequence=[GDM_NAVY],
+            )
+            rank_fig.update_layout(height=max(400, top_n * 28))
+            with st.container(height=600, border=True):
+                show_plot(rank_fig)
+            st.download_button("Baixar estimativas CSV", estimates.to_csv(index=False),
+                               f"estimativas_{analysis['method'].lower()}.csv", "text/csv")
+        with result_tabs[1]:
+            cells = analysis["cells"].rename(columns={
+                TRIAL_LABEL_COLUMN: TRIAL_DISPLAY_LABEL, "predicted": "Predito",
+                "raw_mean": "Média bruta", "n": "Parcelas",
             })
-            # additional VC
-            if hasattr(res, "vcomp") and res.vcomp is not None:
-                extra = randoms[1:]
-                for i, vc_val in enumerate(res.vcomp):
-                    nm = extra[i] if i < len(extra) else f"VC_{i}"
-                    var_rows.append({
-                        "Componente": column_display_name(nm),
-                        "Variancia": float(vc_val),
-                    })
-            # residual
-            rv = float(res.scale)
-            var_rows.append({"Componente": "Residual", "Variancia": rv})
-            vdf = pd.DataFrame(var_rows)
-            vdf["DP"] = np.sqrt(vdf["Variancia"].clip(lower=0))
-            total = vdf["Variancia"].sum()
-            vdf["%Total"] = (vdf["Variancia"] / total * 100).round(2)
-            st.dataframe(vdf, width="stretch", hide_index=True)
-            fig = px.pie(
-                vdf,
-                values="Variancia",
-                names="Componente",
-                title="Proporção dos componentes de variância",
-                hole=.48,
-            )
-            show_plot(fig)
+            st.dataframe(cells, width="stretch", hide_index=True)
+            st.caption("Somente combinações observadas no ajuste. Outros efeitos aleatórios "
+                       "(ex.: blocos) são fixados em zero para comparar genótipos.")
+            st.download_button("Baixar predições por ensaio", cells.to_csv(index=False),
+                               "predicoes_por_ensaio.csv", "text/csv")
+        with result_tabs[2]:
+            variance = analysis["variance"].copy()
+            variance["Componente"] = variance["Componente"].map(column_display_name)
+            st.dataframe(variance, width="stretch", hide_index=True)
+            if analysis["method"] == "BLUE":
+                st.caption("Genótipo fixo: não se estima variância genotípica nem herdabilidade neste ajuste.")
+            else:
+                st.caption("A herdabilidade exige definição do delineamento e da variância de "
+                           "erro das predições; não é inferida apenas da variância do primeiro fator.")
+        with result_tabs[3]:
+            st.text(str(analysis["result"].summary()))
+            st.write("Efeitos fixos: " + ", ".join(map(column_display_name, analysis["fixed"])))
+            st.write("Efeitos aleatórios: " + ", ".join(map(column_display_name, analysis["random"])))
+            st.write("Interação genótipo × ensaio: " + ("Sim" if analysis["interaction"] else "Não"))
 
-        # --- BLUPs ---
-        with t3:
-            primary_label = column_display_name(primary)
-            st.subheader(f"BLUPs - {primary_label}")
-            blups = []
-            intercept = float(res.fe_params.get("Intercept", 0))
-            for grp, eff in res.random_effects.items():
-                val = float(eff.iloc[0]) if hasattr(eff, "iloc") else float(eff)
-                blups.append({primary: grp, "BLUP": val, "Predito": intercept + val})
-            bdf = pd.DataFrame(blups).sort_values("BLUP", ascending=False).reset_index(drop=True)
-            bdf.index += 1
-            bdf.index.name = "Rank"
-            st.dataframe(
-                bdf.rename(columns={primary: primary_label}),
-                width="stretch",
-                height=400,
-            )
-            fig = px.histogram(
-                bdf,
-                x="BLUP",
-                nbins=30,
-                title=f"Distribuição dos BLUPs · ({primary_label})",
-                color_discrete_sequence=[GDM_LIME],
-            )
-            show_plot(fig)
-            st.download_button("Download BLUPs", bdf.to_csv(), "blups.csv", "text/csv")
-
-        # --- Herdabilidade ---
-        with t4:
-            st.subheader("Herdabilidade")
-            Vg = gv
-            Ve = rv
-            avg_r = dm.groupby(primary).size().mean() if primary in dm.columns else 1
-            H2 = Vg / (Vg + Ve) if (Vg + Ve) > 0 else 0
-            H2m = Vg / (Vg + Ve / avg_r) if (Vg + Ve / avg_r) > 0 else 0
-            c1, c2, c3 = st.columns(3)
-            c1.metric("H2 (ampla)", f"{H2:.4f}")
-            c2.metric("H2 (media)", f"{H2m:.4f}")
-            c3.metric("Reps medias", f"{avg_r:.1f}")
-            st.markdown(f"""
-            **Formulas:**
-            - H2 ampla = Vg / (Vg + Ve) = {Vg:.4f} / ({Vg:.4f} + {Ve:.4f}) = **{H2:.4f}**
-            - H2 media = Vg / (Vg + Ve/r) = {Vg:.4f} / ({Vg:.4f} + {Ve:.4f}/{avg_r:.1f}) = **{H2m:.4f}**
-            """)
-
-        # --- Ranking ---
-        with t5:
-            st.subheader(f"Ranking ({resp})")
-            max_top = max(1, min(200, len(bdf)))
-            ntop = st.slider("Top N", 1, max_top, min(20, max_top))
-            top = bdf.head(ntop).copy()
-            fig = px.bar(
-                top,
-                x=primary,
-                y="Predito",
-                title=f"Top {ntop} · Valor predito ({column_display_name(resp)})",
-                color="BLUP",
-                color_continuous_scale=GDM_SCALE,
-                labels={primary: primary_label},
-            )
-            fig.update_layout(xaxis_tickangle=-45, height=600)
-            show_plot(fig)
-
-# ---------------------------------------------------------------------------
-# Page: Diagnosticos
-# ---------------------------------------------------------------------------
-elif page == "Diagnosticos":
-    render_page_intro(
-        "Qualidade do ajuste",
-        "Diagnósticos do modelo",
-        "Inspecione resíduos, normalidade e incerteza dos efeitos fixos antes de interpretar o ranking.",
-    )
-    if "mres" not in st.session_state:
-        st.warning("Ajuste um modelo primeiro.")
+with pages[5]:
+    render_page_intro("Qualidade", "Diagnósticos do ajuste",
+                      "Resíduos por parcela e incerteza dos coeficientes fixos.")
+    analysis = st.session_state.get("analysis")
+    if analysis is None:
+        st.info("Calcule BLUE ou BLUP na aba Modelo com o datacut atual.")
     else:
-        res = st.session_state["mres"]
-        residuals = res.resid
-        fitted = res.fittedvalues
-
-        dt1, dt2, dt3 = st.tabs(["⌁ Resíduos", "◈ Wald Test", "↗ Efeitos fixos"])
-
-        with dt1:
-            c1, c2 = st.columns(2)
-            with c1:
-                fig = px.scatter(x=fitted, y=residuals, opacity=0.4,
-                                 labels={"x": "Ajustados", "y": "Residuos"},
-                                 title="Residuos vs Ajustados")
-                fig.add_hline(y=0, line_dash="dash", line_color=GDM_CORAL)
-                show_plot(fig)
-            with c2:
-                sr = np.sort(residuals)
-                n = len(sr)
-                tq = stats.norm.ppf(np.arange(1, n + 1) / (n + 1))
-                fig = px.scatter(x=tq, y=sr,
-                                 labels={"x": "Quantis Teoricos", "y": "Quantis Amostrais"},
-                                 title="QQ Plot")
-                mn, mx = min(tq.min(), sr.min()), max(tq.max(), sr.max())
-                fig.add_trace(go.Scatter(x=[mn, mx], y=[mn, mx],
-                              mode="lines", line=dict(color=GDM_CORAL, dash="dash"),
-                              showlegend=False))
-                show_plot(fig)
-
-            c3, c4 = st.columns(2)
-            with c3:
-                fig = px.histogram(x=residuals, nbins=40, title="Histograma Residuos",
-                                   labels={"x": "Residuos"},
-                                   color_discrete_sequence=[GDM_LIME])
-                show_plot(fig)
-            with c4:
-                fig = px.scatter(x=fitted, y=np.sqrt(np.abs(residuals)), opacity=0.4,
-                                 labels={"x": "Ajustados", "y": "sqrt|Residuos|"},
-                                 title="Scale-Location")
-                show_plot(fig)
-
-            st.subheader("Testes de Normalidade")
-            nr = len(residuals)
-            if nr <= 5000:
-                sw, sp = stats.shapiro(residuals)
-                st.markdown(f"**Shapiro-Wilk:** W={sw:.4f}, p={sp:.2e}")
-            else:
-                st.info(f"Shapiro-Wilk nao aplicavel (n={nr:,} > 5000).")
-            ks, kp = stats.kstest(residuals, "norm",
-                                  args=(residuals.mean(), residuals.std()))
-            st.markdown(f"**Kolmogorov-Smirnov:** D={ks:.4f}, p={kp:.2e}")
-
-        with dt2:
-            st.subheader("Wald Test - Efeitos Fixos")
-            fe = res.fe_params
-            try:
-                se = res.bse_fe
-            except Exception:
-                se = res.bse.reindex(fe.index)
-            z = fe / se
-            pv = 2 * (1 - stats.norm.cdf(np.abs(z)))
-            wdf = pd.DataFrame({"Coef": fe, "SE": se, "z": z, "P>|z|": pv})
-            wdf["Sig"] = wdf["P>|z|"].apply(
-                lambda p: "***" if p < 0.001 else "**" if p < 0.01
-                else "*" if p < 0.05 else "ns")
-            st.dataframe(wdf.round(4), width="stretch")
-            st.caption("*** p<0.001 | ** p<0.01 | * p<0.05 | ns nao significativo")
-            st.metric("Log-Likelihood", f"{res.llf:.4f}")
-            st.metric("Convergiu", "Sim" if res.converged else "Nao")
-
-        with dt3:
-            st.subheader("Forest Plot - Efeitos Fixos")
-            fe_df = pd.DataFrame({"Efeito": fe.index, "Est": fe.values, "SE": se.values})
-            fe_df = fe_df[fe_df["Efeito"] != "Intercept"]
-            if fe_df.empty:
-                st.info("Apenas intercepto no modelo.")
-            else:
-                fe_df["lo"] = fe_df["Est"] - 1.96 * fe_df["SE"]
-                fe_df["hi"] = fe_df["Est"] + 1.96 * fe_df["SE"]
-                fig = go.Figure()
-                fig.add_trace(go.Scatter(
-                    x=fe_df["Est"], y=fe_df["Efeito"], mode="markers",
-                    marker=dict(size=9, color=GDM_LIME, line=dict(color=GDM_NAVY, width=1)),
-                    error_x=dict(type="data", symmetric=False,
-                                 array=(fe_df["hi"] - fe_df["Est"]).tolist(),
-                                 arrayminus=(fe_df["Est"] - fe_df["lo"]).tolist()),
-                    name="IC 95%"))
-                fig.add_vline(x=0, line_dash="dash", line_color=GDM_CORAL)
-                fig.update_layout(height=max(350, len(fe_df) * 30))
-                show_plot(fig)
+        fitted = analysis["fitted"]
+        residuals = analysis["residuals"]
+        chart_left, chart_right = st.columns(2)
+        with chart_left:
+            fig = px.scatter(x=fitted, y=residuals, opacity=.45,
+                             labels={"x": "Ajustados por parcela", "y": "Resíduos"},
+                             title="Resíduos × ajustados")
+            fig.add_hline(y=0, line_dash="dash", line_color=GDM_CORAL)
+            show_plot(fig)
+        with chart_right:
+            quantiles = stats.norm.ppf((np.arange(len(residuals)) + .5) / len(residuals))
+            show_plot(px.scatter(x=quantiles, y=np.sort(residuals),
+                                 labels={"x": "Quantis normais", "y": "Resíduos ordenados"},
+                                 title="QQ plot"))
+        st.dataframe(analysis["fixed_coefficients"], width="stretch", hide_index=True)
