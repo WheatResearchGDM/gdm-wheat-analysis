@@ -238,6 +238,28 @@ section[data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"] {
     border-radius: 10px;
 }
 
+section[data-testid="stSidebar"] [data-testid="stDownloadButton"] button {
+    background: var(--gdm-lime) !important;
+    border: 1px solid var(--gdm-lime) !important;
+    color: var(--gdm-navy) !important;
+}
+
+section[data-testid="stSidebar"] [data-testid="stDownloadButton"] button p,
+section[data-testid="stSidebar"] [data-testid="stDownloadButton"] button span {
+    color: var(--gdm-navy) !important;
+    font-weight: 700 !important;
+}
+
+section[data-testid="stSidebar"] [data-testid="stButton"] button {
+    background: rgba(255,255,255,.08) !important;
+    border: 1px solid rgba(255,255,255,.20) !important;
+}
+
+section[data-testid="stSidebar"] [data-testid="stButton"] button p {
+    color: #FFFFFF !important;
+    font-weight: 700 !important;
+}
+
 /* Top navigation */
 div[data-testid="stRadio"] {
     background: rgba(255,255,255,.78);
@@ -253,6 +275,7 @@ div[data-testid="stRadio"] div[role="radiogroup"] {
 }
 
 div[data-testid="stRadio"] div[role="radiogroup"] label {
+    background: #FFFFFF;
     border-radius: 10px;
     color: var(--gdm-gray);
     font-weight: 600;
@@ -264,6 +287,49 @@ div[data-testid="stRadio"] div[role="radiogroup"] label:has(input:checked) {
     background: var(--gdm-navy);
     box-shadow: 0 6px 16px rgba(9,36,59,.16);
     color: #FFFFFF;
+}
+
+div[data-testid="stRadio"] div[role="radiogroup"] label p {
+    color: var(--gdm-gray) !important;
+}
+
+div[data-testid="stRadio"] div[role="radiogroup"] label:has(input:checked) p {
+    color: #FFFFFF !important;
+}
+
+.scenario-heading {
+    background: #FFFFFF;
+    border: 1px solid var(--gdm-line);
+    border-radius: 18px;
+    box-shadow: 0 16px 38px rgba(9,36,59,.08);
+    margin-bottom: 1rem;
+    padding: 1.4rem 1.5rem 1.15rem;
+}
+
+.scenario-heading__eyebrow {
+    color: var(--gdm-lime);
+    font-size: .7rem;
+    font-weight: 700;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+}
+
+.scenario-heading h2 {
+    color: var(--gdm-navy);
+    font-size: 1.45rem;
+    margin: .3rem 0 .35rem;
+}
+
+.scenario-heading p {
+    color: var(--gdm-gray);
+    margin: 0;
+}
+
+div[data-testid="stVerticalBlockBorderWrapper"] {
+    background: rgba(255,255,255,.86);
+    border-color: var(--gdm-line);
+    border-radius: 16px;
+    box-shadow: 0 12px 28px rgba(9,36,59,.055);
 }
 
 /* Hero */
@@ -774,26 +840,26 @@ def cascading_multiselect(
     return apply_column_filter(data, column, selected), selected
 
 
-def material_display_labels(materials: pd.DataFrame) -> dict:
-    """Build concise, unique labels while retaining GID as the stored value."""
+def material_display_labels(
+    materials: pd.DataFrame,
+    observations: pd.DataFrame,
+) -> dict:
+    """Use germplasm_name as label while retaining GID as the stored value."""
+    names_by_gid = {}
+    if {"gid", "germplasm_name"}.issubset(observations.columns):
+        name_rows = observations[["gid", "germplasm_name"]].dropna().copy()
+        name_rows["gid"] = normalize_gid_series(name_rows["gid"])
+        names_by_gid = (
+            name_rows.drop_duplicates("gid").set_index("gid")["germplasm_name"].to_dict()
+        )
+
     labels = {}
     for _, row in materials.iterrows():
         gid = normalize_gid_value(row.get(MATERIAL_GID_COLUMN))
         if gid is None:
             continue
-        name = next(
-            (
-                str(row.get(column)).strip()
-                for column in ["commercial_name", "production_name", "germplasm_name"]
-                if pd.notna(row.get(column)) and str(row.get(column)).strip()
-            ),
-            gid,
-        )
-        category = row.get("category")
-        parts = [name, f"GID {gid}"]
-        if pd.notna(category) and str(category).strip():
-            parts.append(str(category).strip())
-        labels[gid] = " · ".join(parts)
+        name = names_by_gid.get(gid)
+        labels[gid] = str(name).strip() if pd.notna(name) else gid
     return labels
 
 
@@ -812,6 +878,7 @@ def scenario_payload(source_id, material_columns, observation_columns):
     return {
         "app": "gdm-wheat-analysis",
         "version": 1,
+        "name": st.session_state.get(f"scenario_name_{source_id}", "Cenário GDM"),
         "saved_at_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "source_fingerprint": source_id,
         "filters": {
@@ -852,6 +919,11 @@ def load_scenario_into_state(payload, source_id):
     st.session_state[
         filter_state_key("selected_gids", source_id, "material")
     ] = [normalize_gid_value(value) for value in selected_gids]
+
+
+def queue_scenario_application(payload):
+    """Queue scenario changes so widget state is updated before the next full run."""
+    st.session_state["pending_scenario_apply"] = payload
 
 
 def format_integer(value) -> str:
@@ -933,6 +1005,7 @@ st.sidebar.markdown(
 )
 
 nav_labels = {
+    "Cenario": "◎  Cenário",
     "Dados": "▦  Visão geral",
     "Índice Ambiental": "⇄  Índice ambiental",
     "Modelo Misto": "◈  Modelo misto",
@@ -1059,8 +1132,8 @@ else:
 st.sidebar.markdown(
     """
     <div class="sidebar-section">
-        <span>Etapa 1</span>
-        <strong>Selecionar genótipos</strong>
+        <span>Cenário ativo</span>
+        <strong>Genótipos da análise</strong>
     </div>
     """,
     unsafe_allow_html=True,
@@ -1077,56 +1150,44 @@ if "gid" in active_data.columns and "gid" in available_materials.columns:
 else:
     unmatched_materials = 0
 
-preferred_material_columns = [
-    column for column in MATERIAL_FILTER_LABELS
-    if column in available_materials.columns
-]
-extra_material_columns = [
-    column for column in available_materials.columns
-    if column not in {"gid", *preferred_material_columns}
-    and column not in {"germplasm_name"}
-]
-material_filter_columns = preferred_material_columns + extra_material_columns
-
-material_filter_panel = st.sidebar.expander("Refinar catálogo de materiais")
-filtered_materials = available_materials
-for column in material_filter_columns:
-    filtered_materials, _ = cascading_multiselect(
-        material_filter_panel,
-        filtered_materials,
-        column,
-        MATERIAL_FILTER_LABELS.get(column, column),
-        source_id,
-        key_prefix="material",
-    )
-
-material_labels = material_display_labels(filtered_materials)
+material_filter_columns = []
+material_labels = material_display_labels(available_materials, active_data)
 material_gid_options = list(material_labels)
 selected_gid_key = filter_state_key("selected_gids", source_id, "material")
-if selected_gid_key in st.session_state:
-    st.session_state[selected_gid_key] = [
-        gid for gid in st.session_state[selected_gid_key]
-        if gid in material_gid_options
-    ]
-else:
-    st.session_state[selected_gid_key] = []
 
-selected_gids = st.sidebar.multiselect(
-    "Genótipos incluídos",
-    material_gid_options,
-    format_func=lambda gid: material_labels.get(gid, gid),
-    key=selected_gid_key,
-    help="A lista vem da segunda aba e é ligada às observações pela coluna gid. Vazio inclui todos os materiais disponíveis.",
-)
-effective_gids = selected_gids or material_gid_options
-if material_sheet_name:
-    st.sidebar.caption(
-        f"{len(effective_gids)} de {len(available_materials)} materiais disponíveis na base."
+pending_scenario = st.session_state.pop("pending_scenario_apply", None)
+if pending_scenario and pending_scenario.get("source_id") == source_id:
+    st.session_state[selected_gid_key] = pending_scenario.get("selected_gids", [])
+    for column, values in pending_scenario.get("observations", {}).items():
+        st.session_state[filter_state_key(column, source_id)] = values
+    st.session_state[f"scenario_name_{source_id}"] = pending_scenario.get(
+        "name", "Cenário GDM"
     )
+    st.session_state["top_navigation"] = "Dados"
+    st.session_state["scenario_applied_message"] = True
+
+st.session_state.setdefault(selected_gid_key, [])
+st.session_state[selected_gid_key] = [
+    gid for gid in st.session_state[selected_gid_key]
+    if gid in material_gid_options
+]
+selected_gids = st.session_state[selected_gid_key]
+effective_gids = selected_gids or material_gid_options
+selection_description = (
+    f"{len(selected_gids)} genótipo(s) selecionado(s)"
+    if selected_gids
+    else f"Todos os {len(material_gid_options)} genótipos disponíveis"
+)
+st.sidebar.caption(selection_description)
 if unmatched_materials:
     st.sidebar.caption(
         f"{unmatched_materials} material(is) do cadastro não têm observações e foram ocultados."
     )
+if st.sidebar.button("Configurar cenário", width="stretch", key="open_scenario_page"):
+    st.session_state["refresh_scenario_draft"] = source_id
+    st.session_state["top_navigation"] = "Cenario"
+if st.session_state.pop("scenario_applied_message", False):
+    st.sidebar.success("Cenário aplicado ao datacut.")
 
 if "gid" in active_data.columns:
     filtered_data = active_data.loc[active_data["gid"].isin(effective_gids)].copy()
@@ -1223,10 +1284,14 @@ scenario = scenario_payload(
     material_filter_columns,
     observation_filter_columns,
 )
+scenario_file_stem = "".join(
+    character if character.isalnum() or character in {"-", "_"} else "_"
+    for character in str(scenario.get("name") or "cenario_filtros_gdm")
+).strip("_") or "cenario_filtros_gdm"
 st.sidebar.download_button(
     "Salvar cenário (JSON)",
     data=json.dumps(scenario, ensure_ascii=False, indent=2).encode("utf-8"),
-    file_name="cenario_filtros_gdm.json",
+    file_name=f"{scenario_file_stem}.json",
     mime="application/json",
     width="stretch",
     help="Salva apenas os filtros e GIDs selecionados; os dados não são incluídos.",
@@ -1254,6 +1319,203 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
+
+# ---------------------------------------------------------------------------
+# Page: Cenario
+# ---------------------------------------------------------------------------
+if page == "Cenario":
+    st.markdown(
+        """
+        <div class="scenario-heading">
+            <div class="scenario-heading__eyebrow">Configuração do datacut</div>
+            <h2>Criar ou ajustar cenário</h2>
+            <p>Escolha os ambientes e os genótipos antes de iniciar as análises. Os nomes vêm de <strong>germplasm_name</strong>; o vínculo entre as abas usa <strong>gid</strong>.</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    draft_prefix = f"scenario_draft_{source_id}_"
+    if st.session_state.pop("refresh_scenario_draft", None) == source_id:
+        for state_key in list(st.session_state):
+            if state_key.startswith(draft_prefix):
+                st.session_state.pop(state_key, None)
+
+    applied_years = st.session_state.get(filter_state_key("year", source_id), [])
+    applied_microregions = st.session_state.get(
+        filter_state_key("microregion_name", source_id), []
+    )
+    applied_conditions = st.session_state.get(
+        filter_state_key("condition_file", source_id), []
+    )
+
+    name_key = f"scenario_name_{source_id}"
+    st.session_state.setdefault(name_key, "Novo cenário")
+    st.session_state.setdefault(f"{draft_prefix}years", applied_years)
+    st.session_state.setdefault(f"{draft_prefix}microregions", applied_microregions)
+    st.session_state.setdefault(f"{draft_prefix}conditions", applied_conditions)
+    st.session_state.setdefault(f"{draft_prefix}mode", "Categoria")
+
+    with st.container(border=True):
+        st.text_input(
+            "Nome do cenário",
+            key=name_key,
+            placeholder="Ex.: BRA_VCU_2026",
+            help="O nome também será usado no arquivo JSON baixado.",
+        )
+
+        cut_col1, cut_col2 = st.columns(2)
+        with cut_col1:
+            scenario_years = st.multiselect(
+                "Anos",
+                filter_options(active_data, "year"),
+                key=f"{draft_prefix}years",
+            )
+        with cut_col2:
+            scenario_microregions = st.multiselect(
+                "Microrregiões",
+                filter_options(active_data, "microregion_name"),
+                key=f"{draft_prefix}microregions",
+            )
+
+        st.markdown("#### Selecionar genótipos por")
+        selection_mode = st.radio(
+            "Critério para organizar os genótipos",
+            ["Categoria", "Ciclo"],
+            horizontal=True,
+            label_visibility="collapsed",
+            key=f"{draft_prefix}mode",
+        )
+
+        selected_scenario_gids = []
+        if selection_mode == "Categoria" and "category" in available_materials.columns:
+            categorized_materials = available_materials.copy()
+            categorized_materials["_category"] = (
+                categorized_materials["category"]
+                .fillna(NULL_FILTER_VALUE)
+                .astype(str)
+                .str.strip()
+                .str.upper()
+            )
+            standard_categories = [
+                ("COMERCIAL", "Comerciais"),
+                ("CHECK", "Checks"),
+                ("EXPERIMENTAL", "Experimentais"),
+            ]
+            rendered_groups = []
+            known_categories = {value for value, _ in standard_categories}
+            for category_value, category_label in standard_categories:
+                category_gids = categorized_materials.loc[
+                    categorized_materials["_category"] == category_value,
+                    "gid",
+                ].tolist()
+                if category_gids:
+                    rendered_groups.append(
+                        (category_value, category_label, category_gids)
+                    )
+            other_gids = categorized_materials.loc[
+                ~categorized_materials["_category"].isin(known_categories),
+                "gid",
+            ].tolist()
+            if other_gids:
+                rendered_groups.append(("OUTROS", "Outros", other_gids))
+
+            group_columns = st.columns(max(1, len(rendered_groups)))
+            for group_column, (category_value, category_label, category_gids) in zip(
+                group_columns, rendered_groups
+            ):
+                category_key = f"{draft_prefix}category_{category_value}"
+                st.session_state.setdefault(
+                    category_key,
+                    [gid for gid in selected_gids if gid in category_gids],
+                )
+                st.session_state[category_key] = [
+                    gid for gid in st.session_state[category_key]
+                    if gid in category_gids
+                ]
+                with group_column:
+                    selected_scenario_gids.extend(
+                        st.multiselect(
+                            category_label,
+                            category_gids,
+                            format_func=lambda gid: material_labels.get(gid, gid),
+                            key=category_key,
+                        )
+                    )
+        elif selection_mode == "Ciclo" and "cycle" in available_materials.columns:
+            cycle_col1, cycle_col2 = st.columns(2)
+            with cycle_col1:
+                selected_cycles = st.multiselect(
+                    "Ciclos",
+                    filter_options(available_materials, "cycle"),
+                    key=f"{draft_prefix}cycles",
+                )
+            cycle_materials = apply_column_filter(
+                available_materials, "cycle", selected_cycles
+            )
+            cycle_gid_options = cycle_materials["gid"].tolist()
+            cycle_genotypes_key = f"{draft_prefix}cycle_genotypes"
+            st.session_state.setdefault(
+                cycle_genotypes_key,
+                [gid for gid in selected_gids if gid in cycle_gid_options],
+            )
+            st.session_state[cycle_genotypes_key] = [
+                gid for gid in st.session_state[cycle_genotypes_key]
+                if gid in cycle_gid_options
+            ]
+            with cycle_col2:
+                cycle_genotypes = st.multiselect(
+                    "Genótipos",
+                    cycle_gid_options,
+                    format_func=lambda gid: material_labels.get(gid, gid),
+                    key=cycle_genotypes_key,
+                )
+            selected_scenario_gids = cycle_genotypes
+            if selected_cycles and not selected_scenario_gids:
+                selected_scenario_gids = cycle_gid_options
+        else:
+            all_genotypes_key = f"{draft_prefix}all_genotypes"
+            st.session_state.setdefault(all_genotypes_key, selected_gids)
+            selected_scenario_gids = st.multiselect(
+                "Genótipos",
+                material_gid_options,
+                format_func=lambda gid: material_labels.get(gid, gid),
+                key=all_genotypes_key,
+            )
+
+        scenario_conditions = st.multiselect(
+            "Condições",
+            filter_options(active_data, "condition_file"),
+            key=f"{draft_prefix}conditions",
+        )
+
+        selection_count = len(set(selected_scenario_gids))
+        if selection_count:
+            st.caption(f"{selection_count} genótipo(s) serão incluídos no cenário.")
+        else:
+            st.caption(
+                f"Nenhum genótipo marcado: todos os {len(material_gid_options)} materiais disponíveis serão incluídos."
+            )
+
+        apply_payload = {
+            "source_id": source_id,
+            "name": st.session_state[name_key],
+            "selected_gids": list(dict.fromkeys(selected_scenario_gids)),
+            "observations": {
+                "year": scenario_years,
+                "microregion_name": scenario_microregions,
+                "condition_file": scenario_conditions,
+            },
+        }
+        action_spacer, action_column = st.columns([3, 1])
+        with action_column:
+            st.button(
+                "Aplicar cenário",
+                type="primary",
+                width="stretch",
+                on_click=queue_scenario_application,
+                args=(apply_payload,),
+            )
 
 # ---------------------------------------------------------------------------
 # Page: Dados
