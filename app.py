@@ -2,6 +2,11 @@
 Versao com dados demonstrativos embutidos (sem dependencia de SQL Warehouse).
 """
 
+import hashlib
+import html
+from io import BytesIO
+from pathlib import Path
+
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -31,6 +36,10 @@ GDM_SCALE = [
     [0.45, GDM_LIME],
     [1.0, GDM_NAVY],
 ]
+
+APP_DIR = Path(__file__).resolve().parent
+TEMPLATE_PATH = APP_DIR / "template_dados_fenotipicos.xlsx"
+REQUIRED_UPLOAD_COLUMNS = {"trial_name", "germplasm_name", "yield"}
 
 px.defaults.template = "plotly_white"
 px.defaults.color_discrete_sequence = [GDM_LIME, GDM_NAVY, "#6F7C80", "#DCE7EA", GDM_CORAL]
@@ -179,6 +188,19 @@ section[data-testid="stSidebar"] details {
     background: rgba(255,255,255,.045);
     border: 1px solid rgba(255,255,255,.10);
     border-radius: 11px;
+}
+
+section[data-testid="stSidebar"] [data-testid="stFileUploader"] {
+    background: rgba(255,255,255,.055);
+    border: 1px solid rgba(255,255,255,.10);
+    border-radius: 12px;
+    padding: .55rem;
+}
+
+section[data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"] {
+    background: rgba(255,255,255,.96);
+    border-color: rgba(181,190,4,.55);
+    border-radius: 10px;
 }
 
 /* Hero */
@@ -518,7 +540,7 @@ def generate_sample_data(n_plots=6000, seed=42):
                         })
     return pd.DataFrame(rows)
 
-FULL_DATA = generate_sample_data()
+SAMPLE_DATA = generate_sample_data()
 
 CATEGORICAL_COLS = [
     "data_source", "trial_type", "trial_name", "pipeline_file",
@@ -531,14 +553,37 @@ CATEGORICAL_COLS = [
 # ---------------------------------------------------------------------------
 # Data helpers
 # ---------------------------------------------------------------------------
-def distinct_values(column: str):
-    if column not in FULL_DATA.columns:
+@st.cache_data(show_spinner=False)
+def read_uploaded_excel(file_bytes: bytes):
+    """Read and validate the first sheet of an uploaded Excel workbook."""
+    df = pd.read_excel(BytesIO(file_bytes), sheet_name=0, engine="openpyxl")
+    df.columns = [str(column).strip() for column in df.columns]
+    df = df.dropna(how="all").reset_index(drop=True)
+
+    missing = sorted(REQUIRED_UPLOAD_COLUMNS.difference(df.columns))
+    if missing:
+        raise ValueError(
+            "Colunas obrigatórias ausentes: " + ", ".join(missing)
+        )
+
+    original_yield = df["yield"].copy()
+    df["yield"] = pd.to_numeric(original_yield, errors="coerce")
+    invalid_yield = int(original_yield.notna().sum() - df["yield"].notna().sum())
+    if df.empty:
+        raise ValueError("A primeira aba do arquivo não contém registros.")
+    if df["yield"].notna().sum() == 0:
+        raise ValueError("A coluna yield não contém valores numéricos válidos.")
+    return df, invalid_yield
+
+
+def distinct_values(data: pd.DataFrame, column: str):
+    if column not in data.columns:
         return []
-    return sorted(FULL_DATA[column].dropna().astype(str).unique().tolist())
+    return sorted(data[column].dropna().astype(str).unique().tolist())
 
 
-def load_data(filters: dict) -> pd.DataFrame:
-    df = FULL_DATA.copy()
+def load_data(data: pd.DataFrame, filters: dict) -> pd.DataFrame:
+    df = data.copy()
     for col, vals in filters.items():
         if vals and col in df.columns:
             df = df[df[col].astype(str).isin([str(v) for v in vals])]
@@ -552,16 +597,28 @@ def format_integer(value) -> str:
     return str(value)
 
 
+def format_decimal(value, decimals=1) -> str:
+    """Format decimal values with Brazilian thousands and decimal separators."""
+    if pd.isna(value):
+        return "-"
+    formatted = f"{float(value):,.{decimals}f}"
+    return formatted.replace(",", "X").replace(".", ",").replace("X", ".")
+
+
 def render_metric(container, icon: str, label: str, value, detail: str):
+    safe_icon = html.escape(str(icon))
+    safe_label = html.escape(str(label))
+    safe_value = html.escape(format_integer(value))
+    safe_detail = html.escape(str(detail))
     container.markdown(
         f"""
         <div class="metric-card">
             <div class="metric-card__top">
-                <span class="metric-card__label">{label}</span>
-                <span class="metric-card__icon">{icon}</span>
+                <span class="metric-card__label">{safe_label}</span>
+                <span class="metric-card__icon">{safe_icon}</span>
             </div>
-            <div class="metric-card__value">{format_integer(value)}</div>
-            <div class="metric-card__detail">{detail}</div>
+            <div class="metric-card__value">{safe_value}</div>
+            <div class="metric-card__detail">{safe_detail}</div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -613,6 +670,7 @@ st.sidebar.markdown(
 
 nav_labels = {
     "Dados": "▦  Visão geral",
+    "Índice Ambiental": "⇄  Índice ambiental",
     "Modelo Misto": "◈  Modelo misto",
     "Resultados": "↗  Resultados",
     "Diagnosticos": "⌁  Diagnósticos",
@@ -623,6 +681,56 @@ page = st.sidebar.radio(
     format_func=nav_labels.get,
     label_visibility="collapsed",
 )
+
+st.sidebar.markdown(
+    """
+    <div class="sidebar-section">
+        <span>Fonte de dados</span>
+        <strong>Importar planilha</strong>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+uploaded_file = st.sidebar.file_uploader(
+    "Arquivo Excel",
+    type=["xlsx"],
+    help="A primeira aba será importada. Campos obrigatórios: trial_name, germplasm_name e yield.",
+)
+
+if TEMPLATE_PATH.exists():
+    st.sidebar.download_button(
+        "Baixar template Excel",
+        data=TEMPLATE_PATH.read_bytes(),
+        file_name="template_dados_fenotipicos.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        width="stretch",
+    )
+
+active_data = SAMPLE_DATA
+source_id = "demonstrative-data"
+source_badge = "● Dados demonstrativos"
+
+if uploaded_file is not None:
+    try:
+        uploaded_bytes = uploaded_file.getvalue()
+        active_data, invalid_yield_count = read_uploaded_excel(uploaded_bytes)
+        source_id = hashlib.sha256(uploaded_bytes).hexdigest()[:12]
+        source_badge = "● Arquivo importado"
+        st.sidebar.success(
+            f"{uploaded_file.name}: {len(active_data):,} linhas".replace(",", ".")
+        )
+        if invalid_yield_count:
+            st.sidebar.warning(
+                f"{invalid_yield_count} valor(es) de yield não numérico(s) foram tratados como ausentes."
+            )
+    except Exception as exc:
+        st.sidebar.error(f"Não foi possível importar o arquivo: {exc}")
+
+if st.session_state.get("active_source_id") != source_id:
+    st.session_state["active_source_id"] = source_id
+    st.session_state["df"] = active_data.copy()
+
 st.sidebar.markdown(
     """
     <div class="sidebar-section">
@@ -635,33 +743,33 @@ st.sidebar.markdown(
 
 filters: dict = {}
 
-years = distinct_values("year")
-sel = st.sidebar.multiselect("Ano", years)
+years = distinct_values(active_data, "year")
+sel = st.sidebar.multiselect("Ano", years, key=f"year_{source_id}")
 if sel:
     filters["year"] = sel
 
-types = distinct_values("trial_type")
-sel = st.sidebar.multiselect("Tipo Ensaio", types)
+types = distinct_values(active_data, "trial_type")
+sel = st.sidebar.multiselect("Tipo Ensaio", types, key=f"trial_type_{source_id}")
 if sel:
     filters["trial_type"] = sel
 
-signed = distinct_values("signed_status")
-sel = st.sidebar.multiselect("Status", signed)
+signed = distinct_values(active_data, "signed_status")
+sel = st.sidebar.multiselect("Status", signed, key=f"signed_status_{source_id}")
 if sel:
     filters["signed_status"] = sel
 
 with st.sidebar.expander("Localizacao"):
     for lc in ["country_name", "macroregion_name", "microregion_name",
                "state_name", "location_name"]:
-        v = distinct_values(lc)
-        s = st.multiselect(lc, v, key=f"f_{lc}")
+        v = distinct_values(active_data, lc)
+        s = st.multiselect(lc, v, key=f"f_{lc}_{source_id}")
         if s:
             filters[lc] = s
 
 with st.sidebar.expander("Material Genetico"):
     for mc in ["germplasm_name", "gid"]:
-        v = distinct_values(mc)
-        s = st.multiselect(mc, v, key=f"f_{mc}")
+        v = distinct_values(active_data, mc)
+        s = st.multiselect(mc, v, key=f"f_{mc}_{source_id}")
         if s:
             filters[mc] = s
 
@@ -670,28 +778,28 @@ with st.sidebar.expander("Outros"):
         "country_name", "macroregion_name", "microregion_name",
         "state_name", "location_name", "germplasm_name", "gid"}
     for oc in [c for c in CATEGORICAL_COLS if c not in shown]:
-        v = distinct_values(oc)
-        s = st.multiselect(oc, v, key=f"f_{oc}")
+        v = distinct_values(active_data, oc)
+        s = st.multiselect(oc, v, key=f"f_{oc}_{source_id}")
         if s:
             filters[oc] = s
 
 if st.sidebar.button("Carregar Dados", type="primary", width="stretch"):
     with st.spinner("Filtrando..."):
-        st.session_state["df"] = load_data(filters)
+        st.session_state["df"] = load_data(active_data, filters)
 
 # Auto-load on first visit
 if "df" not in st.session_state:
-    st.session_state["df"] = FULL_DATA.copy()
+    st.session_state["df"] = active_data.copy()
 
 st.markdown(
-    """
+    f"""
     <div class="gdm-hero">
         <div class="gdm-hero__copy">
             <div class="gdm-eyebrow">GDM · Research Analytics</div>
             <h1>Wheat Phenotypic Analysis</h1>
             <p>Explore ensaios, compare germoplasmas e transforme dados fenotípicos em decisões de melhoramento mais claras.</p>
         </div>
-        <div class="gdm-hero__badge"><span>● Dados demonstrativos</span></div>
+        <div class="gdm-hero__badge"><span>{html.escape(source_badge)}</span></div>
     </div>
     """,
     unsafe_allow_html=True,
@@ -762,6 +870,234 @@ if page == "Dados":
         if num:
             st.dataframe(df[num].describe().round(3), width="stretch")
     st.download_button("Download CSV", df.to_csv(index=False), "wheat_data.csv", "text/csv")
+
+# ---------------------------------------------------------------------------
+# Page: Environmental index head-to-head
+# ---------------------------------------------------------------------------
+elif page == "Índice Ambiental":
+    render_page_intro(
+        "Comparação head-to-head",
+        "Índice ambiental de produtividade",
+        "Compare dois genótipos nos ambientes em que ambos foram avaliados.",
+    )
+    df = st.session_state["df"].copy()
+    required = {"trial_name", "germplasm_name", "yield"}
+
+    if not required.issubset(df.columns):
+        missing = ", ".join(sorted(required.difference(df.columns)))
+        st.warning(f"A base filtrada não contém as colunas necessárias: {missing}.")
+    else:
+        comparison_data = df[list(required)].copy()
+        comparison_data["yield"] = pd.to_numeric(comparison_data["yield"], errors="coerce")
+        comparison_data = comparison_data.dropna(
+            subset=["trial_name", "germplasm_name", "yield"]
+        )
+        comparison_data["trial_name"] = comparison_data["trial_name"].astype(str)
+        comparison_data["germplasm_name"] = comparison_data["germplasm_name"].astype(str)
+        genotypes = sorted(comparison_data["germplasm_name"].unique().tolist())
+
+        if len(genotypes) < 2:
+            st.warning(
+                "O datacut precisa conter pelo menos dois genótipos com produtividade válida."
+            )
+        else:
+            presence = pd.crosstab(
+                comparison_data["trial_name"],
+                comparison_data["germplasm_name"],
+            ).gt(0).astype(int)
+            cooccurrence = presence.T.dot(presence)
+            np.fill_diagonal(cooccurrence.values, -1)
+            default_a_index, default_b_index = np.unravel_index(
+                cooccurrence.to_numpy().argmax(),
+                cooccurrence.shape,
+            )
+            default_a = cooccurrence.index[default_a_index]
+            default_b = cooccurrence.columns[default_b_index]
+
+            selector_left, selector_right = st.columns(2, gap="large")
+            with selector_left:
+                genotype_a = st.selectbox(
+                    "Genótipo A",
+                    genotypes,
+                    index=genotypes.index(default_a),
+                    key=f"environment_index_a_{source_id}",
+                )
+            with selector_right:
+                genotype_b = st.selectbox(
+                    "Genótipo B",
+                    genotypes,
+                    index=genotypes.index(default_b),
+                    key=f"environment_index_b_{source_id}",
+                )
+
+            if genotype_a == genotype_b:
+                st.info("Selecione dois genótipos diferentes para gerar a comparação.")
+            else:
+                pair_data = comparison_data[
+                    comparison_data["germplasm_name"].isin([genotype_a, genotype_b])
+                ]
+                pair_means = (
+                    pair_data.groupby(["trial_name", "germplasm_name"], as_index=False)["yield"]
+                    .mean()
+                    .rename(columns={"yield": "genotype_yield"})
+                )
+                common_trials = (
+                    pair_means.groupby("trial_name")["germplasm_name"]
+                    .nunique()
+                    .loc[lambda values: values == 2]
+                    .index
+                )
+
+                if len(common_trials) == 0:
+                    st.warning(
+                        "Os genótipos selecionados não aparecem juntos em nenhum trial_name do datacut."
+                    )
+                else:
+                    environmental_mean = (
+                        comparison_data[
+                            comparison_data["trial_name"].isin(common_trials)
+                        ]
+                        .groupby("trial_name", as_index=False)["yield"]
+                        .mean()
+                        .rename(columns={"yield": "environmental_mean"})
+                    )
+                    plot_data = pair_means[
+                        pair_means["trial_name"].isin(common_trials)
+                    ].merge(environmental_mean, on="trial_name", how="inner")
+
+                    mean_a = plot_data.loc[
+                        plot_data["germplasm_name"] == genotype_a, "genotype_yield"
+                    ].mean()
+                    mean_b = plot_data.loc[
+                        plot_data["germplasm_name"] == genotype_b, "genotype_yield"
+                    ].mean()
+
+                    m1, m2, m3, m4 = st.columns(4)
+                    render_metric(m1, "◫", "Ambientes comuns", len(common_trials), "trial_name com ambos")
+                    render_metric(m2, "A", "Média genótipo A", format_decimal(mean_a), genotype_a)
+                    render_metric(m3, "B", "Média genótipo B", format_decimal(mean_b), genotype_b)
+                    render_metric(
+                        m4,
+                        "Δ",
+                        "Diferença A − B",
+                        format_decimal(mean_a - mean_b),
+                        "média nos ambientes comuns",
+                    )
+
+                    st.info(
+                        "A média ambiental no eixo X usa todos os genótipos disponíveis em cada "
+                        "trial_name após os filtros. O eixo Y mostra a produtividade média de cada "
+                        "genótipo selecionado no mesmo ambiente."
+                    )
+                    section_label("Desempenho por ambiente")
+
+                    colors = {genotype_a: GDM_LIME, genotype_b: GDM_NAVY}
+                    fig = go.Figure()
+                    for genotype in [genotype_a, genotype_b]:
+                        genotype_data = plot_data[
+                            plot_data["germplasm_name"] == genotype
+                        ].sort_values("environmental_mean")
+                        fig.add_trace(
+                            go.Scatter(
+                                x=genotype_data["environmental_mean"],
+                                y=genotype_data["genotype_yield"],
+                                mode="markers",
+                                name=genotype,
+                                customdata=genotype_data[["trial_name"]],
+                                marker=dict(
+                                    color=colors[genotype],
+                                    size=11,
+                                    line=dict(color="#FFFFFF", width=1.5),
+                                ),
+                                hovertemplate=(
+                                    "<b>%{customdata[0]}</b><br>"
+                                    "Média ambiental: %{x:,.1f}<br>"
+                                    "Produtividade do genótipo: %{y:,.1f}<extra></extra>"
+                                ),
+                            )
+                        )
+                        if (
+                            len(genotype_data) >= 2
+                            and genotype_data["environmental_mean"].nunique() >= 2
+                        ):
+                            slope, intercept = np.polyfit(
+                                genotype_data["environmental_mean"],
+                                genotype_data["genotype_yield"],
+                                1,
+                            )
+                            x_line = np.array([
+                                genotype_data["environmental_mean"].min(),
+                                genotype_data["environmental_mean"].max(),
+                            ])
+                            fig.add_trace(
+                                go.Scatter(
+                                    x=x_line,
+                                    y=intercept + slope * x_line,
+                                    mode="lines",
+                                    line=dict(color=colors[genotype], width=2.5),
+                                    hoverinfo="skip",
+                                    showlegend=False,
+                                )
+                            )
+
+                    axis_min = min(
+                        plot_data["environmental_mean"].min(),
+                        plot_data["genotype_yield"].min(),
+                    )
+                    axis_max = max(
+                        plot_data["environmental_mean"].max(),
+                        plot_data["genotype_yield"].max(),
+                    )
+                    fig.add_trace(
+                        go.Scatter(
+                            x=[axis_min, axis_max],
+                            y=[axis_min, axis_max],
+                            mode="lines",
+                            line=dict(color="#AAB3B6", width=1.5, dash="dot"),
+                            name="Igual à média ambiental",
+                            hoverinfo="skip",
+                        )
+                    )
+                    fig.update_layout(
+                        title="Produtividade dos genótipos × média ambiental",
+                        xaxis_title="Média ambiental por trial_name",
+                        yaxis_title="Produtividade média do genótipo",
+                        hovermode="closest",
+                    )
+                    show_plot(fig)
+
+                    section_label("Detalhamento dos ambientes comuns")
+                    comparison_table = (
+                        plot_data.pivot(
+                            index=["trial_name", "environmental_mean"],
+                            columns="germplasm_name",
+                            values="genotype_yield",
+                        )
+                        .reset_index()
+                        .rename_axis(None, axis=1)
+                    )
+                    comparison_table[f"Diferença · {genotype_a} − {genotype_b}"] = (
+                        comparison_table[genotype_a] - comparison_table[genotype_b]
+                    )
+                    comparison_table = comparison_table.sort_values("environmental_mean")
+                    st.dataframe(
+                        comparison_table,
+                        width="stretch",
+                        hide_index=True,
+                        column_config={
+                            "environmental_mean": st.column_config.NumberColumn(
+                                "Média ambiental", format="%.1f"
+                            ),
+                            genotype_a: st.column_config.NumberColumn(genotype_a, format="%.1f"),
+                            genotype_b: st.column_config.NumberColumn(genotype_b, format="%.1f"),
+                        },
+                    )
+                    st.download_button(
+                        "Baixar comparação CSV",
+                        comparison_table.to_csv(index=False),
+                        "indice_ambiental_head_to_head.csv",
+                        "text/csv",
+                    )
 
 # ---------------------------------------------------------------------------
 # Page: Modelo Misto

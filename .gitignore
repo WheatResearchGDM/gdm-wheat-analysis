@@ -5,3 +5,6 @@ venv/
 .streamlit/secrets.toml
 .env
 .DS_Store
+artifact_build/
+outputs/
+*.inspect.ndjson
