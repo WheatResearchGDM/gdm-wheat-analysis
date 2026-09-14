@@ -40,6 +40,11 @@ GDM_SCALE = [
 APP_DIR = Path(__file__).resolve().parent
 TEMPLATE_PATH = APP_DIR / "template_dados_fenotipicos.xlsx"
 REQUIRED_UPLOAD_COLUMNS = {"trial_name", "germplasm_name", "yield"}
+NULL_FILTER_VALUE = "(Nulo)"
+DEFAULT_FILTER_VALUES = {
+    "plot_is_discarded": ["False"],
+    "missing_dev_file": ["no"],
+}
 
 px.defaults.template = "plotly_white"
 px.defaults.color_discrete_sequence = [GDM_LIME, GDM_NAVY, "#6F7C80", "#DCE7EA", GDM_CORAL]
@@ -201,6 +206,34 @@ section[data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"] {
     background: rgba(255,255,255,.96);
     border-color: rgba(181,190,4,.55);
     border-radius: 10px;
+}
+
+/* Top navigation */
+div[data-testid="stRadio"] {
+    background: rgba(255,255,255,.78);
+    border: 1px solid var(--gdm-line);
+    border-radius: 14px;
+    box-shadow: 0 8px 24px rgba(9,36,59,.055);
+    margin-bottom: 1rem;
+    padding: .35rem;
+}
+
+div[data-testid="stRadio"] div[role="radiogroup"] {
+    gap: .35rem;
+}
+
+div[data-testid="stRadio"] div[role="radiogroup"] label {
+    border-radius: 10px;
+    color: var(--gdm-gray);
+    font-weight: 600;
+    min-height: 2.45rem;
+    padding: .45rem .85rem;
+}
+
+div[data-testid="stRadio"] div[role="radiogroup"] label:has(input:checked) {
+    background: var(--gdm-navy);
+    box-shadow: 0 6px 16px rgba(9,36,59,.16);
+    color: #FFFFFF;
 }
 
 /* Hero */
@@ -517,6 +550,12 @@ def generate_sample_data(n_plots=6000, seed=42):
                             "pipeline_file": pipe,
                             "condition_file": cond,
                             "signed_status": signed,
+                            "plot_is_discarded": bool(
+                                rng.choice([False, True], p=[0.97, 0.03])
+                            ),
+                            "missing_dev_file": rng.choice(
+                                ["no", "yes", None], p=[0.75, 0.08, 0.17]
+                            ),
                             "location_name": loc_name,
                             "state_name": state,
                             "country_name": "Brasil",
@@ -547,6 +586,7 @@ CATEGORICAL_COLS = [
     "condition_file", "signed_status", "location_name",
     "state_name", "country_name", "macroregion_name", "microregion_name",
     "germplasm_name", "gid", "company_name", "area",
+    "plot_is_discarded", "missing_dev_file",
 ]
 
 
@@ -576,18 +616,60 @@ def read_uploaded_excel(file_bytes: bytes):
     return df, invalid_yield
 
 
-def distinct_values(data: pd.DataFrame, column: str):
+def filter_options(data: pd.DataFrame, column: str):
+    """Return string options for a filter, including an explicit null choice."""
     if column not in data.columns:
         return []
-    return sorted(data[column].dropna().astype(str).unique().tolist())
+    options = sorted(
+        data[column].dropna().astype(str).unique().tolist(),
+        key=str.casefold,
+    )
+    if data[column].isna().any():
+        options.append(NULL_FILTER_VALUE)
+    return options
 
 
-def load_data(data: pd.DataFrame, filters: dict) -> pd.DataFrame:
-    df = data.copy()
-    for col, vals in filters.items():
-        if vals and col in df.columns:
-            df = df[df[col].astype(str).isin([str(v) for v in vals])]
-    return df
+def apply_column_filter(data: pd.DataFrame, column: str, selected):
+    """Apply one cascading filter while preserving explicit null selections."""
+    if not selected or column not in data.columns:
+        return data
+    non_null_values = [value for value in selected if value != NULL_FILTER_VALUE]
+    mask = data[column].astype(str).isin(non_null_values)
+    if NULL_FILTER_VALUE in selected:
+        mask = mask | data[column].isna()
+    return data.loc[mask]
+
+
+def cascading_multiselect(container, data, column, label, source_id, defaults=None):
+    """Render one filter and return the dataset available to the next filter."""
+    if column not in data.columns:
+        return data, []
+
+    options = filter_options(data, column)
+    key = f"cascade_{column}_{source_id}"
+    if key in st.session_state:
+        valid_selection = [
+            value for value in st.session_state[key] if value in options
+        ]
+        if valid_selection != st.session_state[key]:
+            st.session_state[key] = valid_selection
+    else:
+        requested_defaults = defaults or []
+        resolved_defaults = []
+        for requested in requested_defaults:
+            match = next(
+                (
+                    option for option in options
+                    if option.casefold() == str(requested).casefold()
+                ),
+                None,
+            )
+            if match is not None:
+                resolved_defaults.append(match)
+        st.session_state[key] = resolved_defaults
+
+    selected = container.multiselect(label, options, key=key)
+    return apply_column_filter(data, column, selected), selected
 
 
 def format_integer(value) -> str:
@@ -675,12 +757,6 @@ nav_labels = {
     "Resultados": "↗  Resultados",
     "Diagnosticos": "⌁  Diagnósticos",
 }
-page = st.sidebar.radio(
-    "Navegação",
-    list(nav_labels),
-    format_func=nav_labels.get,
-    label_visibility="collapsed",
-)
 
 st.sidebar.markdown(
     """
@@ -741,55 +817,92 @@ st.sidebar.markdown(
     unsafe_allow_html=True,
 )
 
-filters: dict = {}
+filtered_data = active_data
+filtered_data, _ = cascading_multiselect(
+    st.sidebar, filtered_data, "year", "Ano", source_id
+)
+filtered_data, _ = cascading_multiselect(
+    st.sidebar, filtered_data, "trial_type", "Tipo de ensaio", source_id
+)
+filtered_data, _ = cascading_multiselect(
+    st.sidebar, filtered_data, "signed_status", "Status", source_id
+)
 
-years = distinct_values(active_data, "year")
-sel = st.sidebar.multiselect("Ano", years, key=f"year_{source_id}")
-if sel:
-    filters["year"] = sel
+st.sidebar.markdown(
+    """
+    <div class="sidebar-section">
+        <span>Qualidade</span>
+        <strong>Elegibilidade dos registros</strong>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+filtered_data, _ = cascading_multiselect(
+    st.sidebar,
+    filtered_data,
+    "plot_is_discarded",
+    "Parcela descartada",
+    source_id,
+    DEFAULT_FILTER_VALUES["plot_is_discarded"],
+)
+filtered_data, _ = cascading_multiselect(
+    st.sidebar,
+    filtered_data,
+    "missing_dev_file",
+    "Missing no arquivo DEV",
+    source_id,
+    DEFAULT_FILTER_VALUES["missing_dev_file"],
+)
 
-types = distinct_values(active_data, "trial_type")
-sel = st.sidebar.multiselect("Tipo Ensaio", types, key=f"trial_type_{source_id}")
-if sel:
-    filters["trial_type"] = sel
+location_panel = st.sidebar.expander("Localização")
+for column, label in [
+    ("country_name", "País"),
+    ("macroregion_name", "Macrorregião"),
+    ("microregion_name", "Microrregião"),
+    ("state_name", "Estado"),
+    ("location_name", "Local"),
+]:
+    filtered_data, _ = cascading_multiselect(
+        location_panel, filtered_data, column, label, source_id
+    )
 
-signed = distinct_values(active_data, "signed_status")
-sel = st.sidebar.multiselect("Status", signed, key=f"signed_status_{source_id}")
-if sel:
-    filters["signed_status"] = sel
+material_panel = st.sidebar.expander("Material genético")
+for column, label in [
+    ("germplasm_name", "Germoplasma"),
+    ("gid", "GID"),
+]:
+    filtered_data, _ = cascading_multiselect(
+        material_panel, filtered_data, column, label, source_id
+    )
 
-with st.sidebar.expander("Localizacao"):
-    for lc in ["country_name", "macroregion_name", "microregion_name",
-               "state_name", "location_name"]:
-        v = distinct_values(active_data, lc)
-        s = st.multiselect(lc, v, key=f"f_{lc}_{source_id}")
-        if s:
-            filters[lc] = s
+dedicated_filters = {
+    "year", "trial_type", "signed_status", "plot_is_discarded",
+    "missing_dev_file", "country_name", "macroregion_name",
+    "microregion_name", "state_name", "location_name",
+    "germplasm_name", "gid",
+}
+other_panel = st.sidebar.expander("Outros")
+for column in [
+    candidate for candidate in CATEGORICAL_COLS
+    if candidate not in dedicated_filters and candidate in active_data.columns
+]:
+    filtered_data, _ = cascading_multiselect(
+        other_panel, filtered_data, column, column, source_id
+    )
 
-with st.sidebar.expander("Material Genetico"):
-    for mc in ["germplasm_name", "gid"]:
-        v = distinct_values(active_data, mc)
-        s = st.multiselect(mc, v, key=f"f_{mc}_{source_id}")
-        if s:
-            filters[mc] = s
+st.session_state["df"] = filtered_data.copy()
+st.sidebar.caption(
+    f"Datacut ativo: {len(filtered_data):,} de {len(active_data):,} registros".replace(",", ".")
+)
 
-with st.sidebar.expander("Outros"):
-    shown = set(filters.keys()) | {"year", "trial_type", "signed_status",
-        "country_name", "macroregion_name", "microregion_name",
-        "state_name", "location_name", "germplasm_name", "gid"}
-    for oc in [c for c in CATEGORICAL_COLS if c not in shown]:
-        v = distinct_values(active_data, oc)
-        s = st.multiselect(oc, v, key=f"f_{oc}_{source_id}")
-        if s:
-            filters[oc] = s
-
-if st.sidebar.button("Carregar Dados", type="primary", width="stretch"):
-    with st.spinner("Filtrando..."):
-        st.session_state["df"] = load_data(active_data, filters)
-
-# Auto-load on first visit
-if "df" not in st.session_state:
-    st.session_state["df"] = active_data.copy()
+page = st.radio(
+    "Navegação",
+    list(nav_labels),
+    format_func=nav_labels.get,
+    horizontal=True,
+    label_visibility="collapsed",
+    key="top_navigation",
+)
 
 st.markdown(
     f"""
