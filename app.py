@@ -41,9 +41,15 @@ GDM_SCALE = [
 
 APP_DIR = Path(__file__).resolve().parent
 TEMPLATE_PATH = APP_DIR / "template_dados_fenotipicos.xlsx"
-REQUIRED_UPLOAD_COLUMNS = {"trial_name", "germplasm_name", "yield"}
+REQUIRED_UPLOAD_COLUMNS = {
+    "trial_id", "trial_name", "location_name", "germplasm_name", "yield"
+}
 MATERIAL_GID_COLUMN = "gid"
 NULL_FILTER_VALUE = "(Nulo)"
+TRIAL_KEY_COLUMN = "_trial_unit_key"
+TRIAL_LABEL_COLUMN = "trial_unit_label"
+TRIAL_DISPLAY_LABEL = "Ensaio | Local"
+MODEL_HIDDEN_COLUMNS = {"trial_id", "trial_name", TRIAL_KEY_COLUMN}
 DEFAULT_FILTER_VALUES = {
     "plot_is_discarded": ["False"],
     "missing_dev_file": ["no"],
@@ -72,6 +78,7 @@ OBSERVATION_FILTERS = [
     ("microregion_name", "Microrregião"),
     ("state_name", "Estado"),
     ("location_name", "Local"),
+    (TRIAL_LABEL_COLUMN, TRIAL_DISPLAY_LABEL),
     ("germplasm_name", "Germoplasma"),
     ("gid", "GID"),
 ]
@@ -640,6 +647,9 @@ def generate_sample_data(n_plots=6000, seed=42):
                         rows.append({
                             "data_source": "cornerstone",
                             "year": yr,
+                            "trial_id": f"TRIAL-{trial_counter:04d}",
+                            TRIAL_KEY_COLUMN: f"{trial_name} | {loc_name}",
+                            TRIAL_LABEL_COLUMN: f"{trial_name} | {loc_name}",
                             "trial_name": trial_name,
                             "trial_type": tt,
                             "trial_number": trial_counter,
@@ -698,7 +708,7 @@ SAMPLE_MATERIALS = (
 )
 
 CATEGORICAL_COLS = [
-    "data_source", "trial_type", "trial_name", "pipeline_file",
+    "data_source", "trial_type", TRIAL_LABEL_COLUMN, "pipeline_file",
     "condition_file", "signed_status", "location_name",
     "state_name", "country_name", "macroregion_name", "microregion_name",
     "germplasm_name", "gid", "company_name", "area",
@@ -709,6 +719,63 @@ CATEGORICAL_COLS = [
 # ---------------------------------------------------------------------------
 # Data helpers
 # ---------------------------------------------------------------------------
+def normalize_identifier_value(value):
+    """Normalize numeric or textual identifiers without exposing float suffixes."""
+    if pd.isna(value):
+        return None
+    if isinstance(value, (int, np.integer)):
+        return str(int(value))
+    if isinstance(value, (float, np.floating)) and float(value).is_integer():
+        return str(int(value))
+    normalized = str(value).strip()
+    return normalized or None
+
+
+def add_trial_unit_columns(data: pd.DataFrame) -> pd.DataFrame:
+    """Create a technical trial key and a readable trial_name | location_name label."""
+    required = {"trial_id", "trial_name", "location_name"}
+    missing = sorted(required.difference(data.columns))
+    if missing:
+        raise ValueError(
+            "Colunas necessárias para identificar os ensaios ausentes: "
+            + ", ".join(missing)
+        )
+
+    enriched = data.copy()
+    normalized_trial_ids = enriched["trial_id"].map(normalize_identifier_value)
+    if normalized_trial_ids.isna().any():
+        missing_ids = int(normalized_trial_ids.isna().sum())
+        raise ValueError(
+            f"A coluna trial_id contém {missing_ids} registro(s) sem identificação."
+        )
+
+    def display_component(series):
+        values = series.astype("string").str.strip()
+        return values.mask(values.isna() | values.eq(""), NULL_FILTER_VALUE)
+
+    enriched[TRIAL_LABEL_COLUMN] = (
+        display_component(enriched["trial_name"])
+        + " | "
+        + display_component(enriched["location_name"])
+    )
+    enriched[TRIAL_KEY_COLUMN] = enriched[TRIAL_LABEL_COLUMN]
+
+    labels_per_id = (
+        enriched.assign(_normalized_trial_id=normalized_trial_ids)
+        .groupby("_normalized_trial_id")[TRIAL_LABEL_COLUMN]
+        .nunique()
+    )
+    conflicting_ids = labels_per_id[labels_per_id > 1]
+    if not conflicting_ids.empty:
+        examples = ", ".join(conflicting_ids.index.astype(str).tolist()[:5])
+        raise ValueError(
+            "O mesmo trial_id está associado a mais de uma combinação "
+            f"trial_name | location_name. Revise: {examples}."
+        )
+
+    return enriched
+
+
 @st.cache_data(show_spinner=False)
 def read_uploaded_excel(file_bytes: bytes):
     """Read observations from sheet 1 and, when present, materials from sheet 2."""
@@ -753,19 +820,13 @@ def read_uploaded_excel(file_bytes: bytes):
         materials = materials.drop_duplicates(MATERIAL_GID_COLUMN).reset_index(drop=True)
         df[MATERIAL_GID_COLUMN] = normalize_gid_series(df[MATERIAL_GID_COLUMN])
 
+    df = add_trial_unit_columns(df)
     return df, invalid_yield, materials, material_sheet_name
 
 
 def normalize_gid_value(value):
     """Normalize numeric and textual GIDs to the same stable string representation."""
-    if pd.isna(value):
-        return None
-    if isinstance(value, (int, np.integer)):
-        return str(int(value))
-    if isinstance(value, (float, np.floating)) and float(value).is_integer():
-        return str(int(value))
-    normalized = str(value).strip()
-    return normalized or None
+    return normalize_identifier_value(value)
 
 
 def normalize_gid_series(series: pd.Series) -> pd.Series:
@@ -939,6 +1000,13 @@ def format_decimal(value, decimals=1) -> str:
         return "-"
     formatted = f"{float(value):,.{decimals}f}"
     return formatted.replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+def column_display_name(column: str) -> str:
+    """Return a readable label for internal analysis columns."""
+    if column == TRIAL_LABEL_COLUMN:
+        return TRIAL_DISPLAY_LABEL
+    return column
 
 
 def render_metric(container, icon: str, label: str, value, detail: str):
@@ -1247,6 +1315,7 @@ for column, label in [
     ("microregion_name", "Microrregião"),
     ("state_name", "Estado"),
     ("location_name", "Local"),
+    (TRIAL_LABEL_COLUMN, TRIAL_DISPLAY_LABEL),
 ]:
     filtered_data, _ = cascading_multiselect(
         location_panel, filtered_data, column, label, source_id
@@ -1255,7 +1324,7 @@ for column, label in [
 dedicated_filters = {
     "year", "trial_type", "signed_status", "plot_is_discarded",
     "missing_dev_file", "country_name", "macroregion_name",
-    "microregion_name", "state_name", "location_name",
+    "microregion_name", "state_name", "location_name", TRIAL_LABEL_COLUMN,
     "germplasm_name", "gid",
 }
 other_panel = st.sidebar.expander("Outros")
@@ -1534,8 +1603,8 @@ if page == "Dados":
         c3,
         "◫",
         "Ensaios",
-        df["trial_name"].nunique() if "trial_name" in df.columns else "-",
-        "experimentos únicos",
+        df[TRIAL_KEY_COLUMN].nunique() if TRIAL_KEY_COLUMN in df.columns else "-",
+        "combinações nome + local",
     )
     render_metric(
         c4,
@@ -1545,7 +1614,7 @@ if page == "Dados":
         "materiais avaliados",
     )
 
-    if not df.empty and {"yield", "location_name"}.issubset(df.columns):
+    if not df.empty and {"yield", TRIAL_LABEL_COLUMN}.issubset(df.columns):
         section_label("Panorama da seleção")
         chart_left, chart_right = st.columns([1.15, 1], gap="large")
         with chart_left:
@@ -1560,28 +1629,52 @@ if page == "Dados":
             show_plot(yield_fig)
         with chart_right:
             location_yield = (
-                df.groupby("location_name", as_index=False)["yield"]
+                df.groupby([TRIAL_KEY_COLUMN, TRIAL_LABEL_COLUMN], as_index=False)["yield"]
                 .mean()
                 .sort_values("yield", ascending=True)
             )
             location_fig = px.bar(
                 location_yield,
                 x="yield",
-                y="location_name",
+                y=TRIAL_KEY_COLUMN,
                 orientation="h",
-                title="Produtividade média por local",
-                labels={"yield": "Produtividade média", "location_name": ""},
+                title="Produtividade média por ensaio",
+                labels={"yield": "Produtividade média", TRIAL_KEY_COLUMN: ""},
+                custom_data=[TRIAL_LABEL_COLUMN],
                 color_discrete_sequence=[GDM_NAVY],
             )
+            location_fig.update_traces(
+                hovertemplate=(
+                    "<b>%{customdata[0]}</b><br>"
+                    "Produtividade média: %{x:,.1f}<extra></extra>"
+                )
+            )
+            location_fig.update_yaxes(
+                tickmode="array",
+                tickvals=location_yield[TRIAL_KEY_COLUMN].tolist(),
+                ticktext=location_yield[TRIAL_LABEL_COLUMN].tolist(),
+            )
+            location_fig.update_layout(height=min(900, max(420, 25 * len(location_yield))))
             show_plot(location_fig)
 
     section_label("Base filtrada")
-    st.dataframe(df, width="stretch", height=500)
+    display_df = df.drop(columns=[TRIAL_KEY_COLUMN], errors="ignore")
+    st.dataframe(
+        display_df,
+        width="stretch",
+        height=500,
+        column_config={TRIAL_LABEL_COLUMN: TRIAL_DISPLAY_LABEL},
+    )
     with st.expander("Estatísticas descritivas"):
         num = df.select_dtypes(include=[np.number]).columns.tolist()
         if num:
             st.dataframe(df[num].describe().round(3), width="stretch")
-    st.download_button("Download CSV", df.to_csv(index=False), "wheat_data.csv", "text/csv")
+    st.download_button(
+        "Download CSV",
+        display_df.to_csv(index=False),
+        "wheat_data.csv",
+        "text/csv",
+    )
 
 # ---------------------------------------------------------------------------
 # Page: Environmental index head-to-head
@@ -1593,7 +1686,9 @@ elif page == "Índice Ambiental":
         "Compare dois genótipos nos ambientes em que ambos foram avaliados.",
     )
     df = st.session_state["df"].copy()
-    required = {"trial_name", "germplasm_name", "yield"}
+    required = {
+        TRIAL_KEY_COLUMN, TRIAL_LABEL_COLUMN, "germplasm_name", "yield"
+    }
 
     if not required.issubset(df.columns):
         missing = ", ".join(sorted(required.difference(df.columns)))
@@ -1602,9 +1697,10 @@ elif page == "Índice Ambiental":
         comparison_data = df[list(required)].copy()
         comparison_data["yield"] = pd.to_numeric(comparison_data["yield"], errors="coerce")
         comparison_data = comparison_data.dropna(
-            subset=["trial_name", "germplasm_name", "yield"]
+            subset=[TRIAL_KEY_COLUMN, TRIAL_LABEL_COLUMN, "germplasm_name", "yield"]
         )
-        comparison_data["trial_name"] = comparison_data["trial_name"].astype(str)
+        comparison_data[TRIAL_KEY_COLUMN] = comparison_data[TRIAL_KEY_COLUMN].astype(str)
+        comparison_data[TRIAL_LABEL_COLUMN] = comparison_data[TRIAL_LABEL_COLUMN].astype(str)
         comparison_data["germplasm_name"] = comparison_data["germplasm_name"].astype(str)
         genotypes = sorted(comparison_data["germplasm_name"].unique().tolist())
 
@@ -1614,7 +1710,7 @@ elif page == "Índice Ambiental":
             )
         else:
             presence = pd.crosstab(
-                comparison_data["trial_name"],
+                comparison_data[TRIAL_KEY_COLUMN],
                 comparison_data["germplasm_name"],
             ).gt(0).astype(int)
             cooccurrence = presence.T.dot(presence)
@@ -1649,12 +1745,15 @@ elif page == "Índice Ambiental":
                     comparison_data["germplasm_name"].isin([genotype_a, genotype_b])
                 ]
                 pair_means = (
-                    pair_data.groupby(["trial_name", "germplasm_name"], as_index=False)["yield"]
+                    pair_data.groupby(
+                        [TRIAL_KEY_COLUMN, TRIAL_LABEL_COLUMN, "germplasm_name"],
+                        as_index=False,
+                    )["yield"]
                     .mean()
                     .rename(columns={"yield": "genotype_yield"})
                 )
                 common_trials = (
-                    pair_means.groupby("trial_name")["germplasm_name"]
+                    pair_means.groupby(TRIAL_KEY_COLUMN)["germplasm_name"]
                     .nunique()
                     .loc[lambda values: values == 2]
                     .index
@@ -1662,20 +1761,26 @@ elif page == "Índice Ambiental":
 
                 if len(common_trials) == 0:
                     st.warning(
-                        "Os genótipos selecionados não aparecem juntos em nenhum trial_name do datacut."
+                        "Os genótipos selecionados não aparecem juntos em nenhum ensaio do datacut."
                     )
                 else:
                     environmental_mean = (
                         comparison_data[
-                            comparison_data["trial_name"].isin(common_trials)
+                            comparison_data[TRIAL_KEY_COLUMN].isin(common_trials)
                         ]
-                        .groupby("trial_name", as_index=False)["yield"]
-                        .mean()
-                        .rename(columns={"yield": "environmental_mean"})
+                        .groupby(TRIAL_KEY_COLUMN, as_index=False)
+                        .agg(
+                            environmental_mean=("yield", "mean"),
+                            **{TRIAL_LABEL_COLUMN: (TRIAL_LABEL_COLUMN, "first")},
+                        )
                     )
                     plot_data = pair_means[
-                        pair_means["trial_name"].isin(common_trials)
-                    ].merge(environmental_mean, on="trial_name", how="inner")
+                        pair_means[TRIAL_KEY_COLUMN].isin(common_trials)
+                    ].drop(columns=[TRIAL_LABEL_COLUMN]).merge(
+                        environmental_mean,
+                        on=TRIAL_KEY_COLUMN,
+                        how="inner",
+                    )
 
                     mean_a = plot_data.loc[
                         plot_data["germplasm_name"] == genotype_a, "genotype_yield"
@@ -1685,7 +1790,7 @@ elif page == "Índice Ambiental":
                     ].mean()
 
                     m1, m2, m3, m4 = st.columns(4)
-                    render_metric(m1, "◫", "Ambientes comuns", len(common_trials), "trial_name com ambos")
+                    render_metric(m1, "◫", "Ensaios comuns", len(common_trials), "ensaios com ambos")
                     render_metric(m2, "A", "Média genótipo A", format_decimal(mean_a), genotype_a)
                     render_metric(m3, "B", "Média genótipo B", format_decimal(mean_b), genotype_b)
                     render_metric(
@@ -1698,7 +1803,7 @@ elif page == "Índice Ambiental":
 
                     st.info(
                         "A média ambiental no eixo X usa todos os genótipos disponíveis em cada "
-                        "trial_name após os filtros. O eixo Y mostra a produtividade média de cada "
+                        "ensaio após os filtros. O eixo Y mostra a produtividade média de cada "
                         "genótipo selecionado no mesmo ambiente."
                     )
                     section_label("Desempenho por ambiente")
@@ -1715,7 +1820,7 @@ elif page == "Índice Ambiental":
                                 y=genotype_data["genotype_yield"],
                                 mode="markers",
                                 name=genotype,
-                                customdata=genotype_data[["trial_name"]],
+                                customdata=genotype_data[[TRIAL_LABEL_COLUMN]],
                                 marker=dict(
                                     color=colors[genotype],
                                     size=11,
@@ -1772,7 +1877,7 @@ elif page == "Índice Ambiental":
                     )
                     fig.update_layout(
                         title="Produtividade dos genótipos × média ambiental",
-                        xaxis_title="Média ambiental por trial_name",
+                        xaxis_title="Média ambiental por ensaio",
                         yaxis_title="Produtividade média do genótipo",
                         hovermode="closest",
                     )
@@ -1781,7 +1886,11 @@ elif page == "Índice Ambiental":
                     section_label("Detalhamento dos ambientes comuns")
                     comparison_table = (
                         plot_data.pivot(
-                            index=["trial_name", "environmental_mean"],
+                            index=[
+                                TRIAL_KEY_COLUMN,
+                                TRIAL_LABEL_COLUMN,
+                                "environmental_mean",
+                            ],
                             columns="germplasm_name",
                             values="genotype_yield",
                         )
@@ -1792,6 +1901,10 @@ elif page == "Índice Ambiental":
                         comparison_table[genotype_a] - comparison_table[genotype_b]
                     )
                     comparison_table = comparison_table.sort_values("environmental_mean")
+                    comparison_table = comparison_table.drop(columns=[TRIAL_KEY_COLUMN])
+                    comparison_table = comparison_table.rename(
+                        columns={TRIAL_LABEL_COLUMN: TRIAL_DISPLAY_LABEL}
+                    )
                     st.dataframe(
                         comparison_table,
                         width="stretch",
@@ -1824,13 +1937,24 @@ elif page == "Modelo Misto":
         st.warning("Carregue os dados primeiro na aba **Dados**.")
     else:
         df = st.session_state["df"].copy()
-        num_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-        cat_cols = df.select_dtypes(include=["object", "string", "category"]).columns.tolist()
+        num_cols = [
+            column for column in df.select_dtypes(include=[np.number]).columns
+            if column not in MODEL_HIDDEN_COLUMNS
+        ]
+        cat_cols = [
+            column
+            for column in df.select_dtypes(include=["object", "string", "category"]).columns
+            if column not in MODEL_HIDDEN_COLUMNS
+        ]
         all_cols = num_cols + cat_cols
 
         section_label("Estrutura do modelo")
-        response = st.selectbox("Variavel dependente (numerica)", num_cols,
-                                index=num_cols.index("yield") if "yield" in num_cols else 0)
+        response = st.selectbox(
+            "Variavel dependente (numerica)",
+            num_cols,
+            index=num_cols.index("yield") if "yield" in num_cols else 0,
+            format_func=column_display_name,
+        )
 
         effects_left, effects_right = st.columns(2, gap="large")
         with effects_left:
@@ -1838,6 +1962,7 @@ elif page == "Modelo Misto":
             fixed = st.multiselect(
                 "Selecione efeitos fixos",
                 [c for c in all_cols if c != response],
+                format_func=column_display_name,
                 help="Variáveis categóricas são tratadas como fatores (C()).",
             )
         with effects_right:
@@ -1845,13 +1970,21 @@ elif page == "Modelo Misto":
             random_eff = st.multiselect(
                 "Selecione efeitos aleatórios",
                 [c for c in cat_cols if c != response and c not in fixed],
-                help="O primeiro será o agrupamento principal. Ex.: germplasm_name, trial_name",
+                format_func=column_display_name,
+                help=(
+                    "O primeiro será o agrupamento principal. Ex.: germplasm_name, "
+                    "Ensaio | Local."
+                ),
             )
 
         # Preview
         if response and fixed and random_eff:
-            fx = " + ".join(f"C({f})" if f in cat_cols else f for f in fixed)
-            st.code(f"{response} ~ {fx}  |  random: {', '.join(random_eff)}", language="r")
+            readable_fixed = " + ".join(column_display_name(value) for value in fixed)
+            readable_random = ", ".join(column_display_name(value) for value in random_eff)
+            st.code(
+                f"{column_display_name(response)} ~ {readable_fixed}  |  random: {readable_random}",
+                language="r",
+            )
 
         # Warn large cardinality
         for re in random_eff:
@@ -1936,13 +2069,19 @@ elif page == "Resultados":
             var_rows = []
             # primary RE
             gv = float(res.cov_re.iloc[0, 0]) if hasattr(res.cov_re, "iloc") else float(res.cov_re)
-            var_rows.append({"Componente": f"{primary} (grupo)", "Variancia": gv})
+            var_rows.append({
+                "Componente": f"{column_display_name(primary)} (grupo)",
+                "Variancia": gv,
+            })
             # additional VC
             if hasattr(res, "vcomp") and res.vcomp is not None:
                 extra = randoms[1:]
                 for i, vc_val in enumerate(res.vcomp):
                     nm = extra[i] if i < len(extra) else f"VC_{i}"
-                    var_rows.append({"Componente": nm, "Variancia": float(vc_val)})
+                    var_rows.append({
+                        "Componente": column_display_name(nm),
+                        "Variancia": float(vc_val),
+                    })
             # residual
             rv = float(res.scale)
             var_rows.append({"Componente": "Residual", "Variancia": rv})
@@ -1962,7 +2101,8 @@ elif page == "Resultados":
 
         # --- BLUPs ---
         with t3:
-            st.subheader(f"BLUPs - {primary}")
+            primary_label = column_display_name(primary)
+            st.subheader(f"BLUPs - {primary_label}")
             blups = []
             intercept = float(res.fe_params.get("Intercept", 0))
             for grp, eff in res.random_effects.items():
@@ -1971,12 +2111,16 @@ elif page == "Resultados":
             bdf = pd.DataFrame(blups).sort_values("BLUP", ascending=False).reset_index(drop=True)
             bdf.index += 1
             bdf.index.name = "Rank"
-            st.dataframe(bdf, width="stretch", height=400)
+            st.dataframe(
+                bdf.rename(columns={primary: primary_label}),
+                width="stretch",
+                height=400,
+            )
             fig = px.histogram(
                 bdf,
                 x="BLUP",
                 nbins=30,
-                title=f"Distribuição dos BLUPs · ({primary})",
+                title=f"Distribuição dos BLUPs · ({primary_label})",
                 color_discrete_sequence=[GDM_LIME],
             )
             show_plot(fig)
@@ -2006,9 +2150,15 @@ elif page == "Resultados":
             max_top = max(1, min(200, len(bdf)))
             ntop = st.slider("Top N", 1, max_top, min(20, max_top))
             top = bdf.head(ntop).copy()
-            fig = px.bar(top, x=primary, y="Predito",
-                         title=f"Top {ntop} · Valor predito ({resp})",
-                         color="BLUP", color_continuous_scale=GDM_SCALE)
+            fig = px.bar(
+                top,
+                x=primary,
+                y="Predito",
+                title=f"Top {ntop} · Valor predito ({column_display_name(resp)})",
+                color="BLUP",
+                color_continuous_scale=GDM_SCALE,
+                labels={primary: primary_label},
+            )
             fig.update_layout(xaxis_tickangle=-45, height=600)
             show_plot(fig)
 
