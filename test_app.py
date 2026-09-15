@@ -2,6 +2,7 @@
 import json
 from pathlib import Path
 import unittest
+import pandas as pd
 
 from streamlit.testing.v1 import AppTest
 
@@ -26,13 +27,13 @@ if "test_saved" in st.session_state:
         app = AppTest.from_string(self.source, default_timeout=45).run()
         self.assertEqual(len(app.exception), 0)
         self.assertEqual(len(app.sidebar), 0)
-        self.assertEqual(multiselect(app, "Parcela descartada").value, ["False"])
-        self.assertEqual(multiselect(app, "Missing no arquivo DEV").value, ["no"])
+        self.assertEqual(multiselect(app, "Parcela descartada SEEDS").value, ["False"])
+        self.assertEqual(multiselect(app, "Parcela descartada DEV").value, ["no", "(Nulo)"])
         app.text_input[0].set_value("Cenário teste").run()
         multiselect(app, "Ano").set_value(["23"]).run()
         multiselect(app, "Microrregião").set_value(["MR1"]).run()
-        multiselect(app, "Parcela descartada").set_value([]).run()
-        multiselect(app, "Missing no arquivo DEV").set_value(["no", "(Nulo)"]).run()
+        multiselect(app, "Parcela descartada SEEDS").set_value([]).run()
+        multiselect(app, "Parcela descartada DEV").set_value(["no", "(Nulo)"]).run()
         # Widget options are readable names; stored values are GIDs.
         multiselect(app, "Genótipos incluídos").set_value(["G1000", "G1001"]).run()
         saved = json.loads(json.dumps(app.session_state["test_export"]))
@@ -83,18 +84,68 @@ if "test_saved" in st.session_state:
         app = AppTest.from_file("app.py", default_timeout=45).run()
         labels = [w.label for w in app.multiselect]
         for removed in ["Região comercial", "Nome de produção", "Nome comercial", "Tipo de elemento",
-                        "Dias ao espigamento", "Dias à maturidade", "País", "Estado", "Local"]:
+                        "Dias ao espigamento", "Dias à maturidade", "País", "Estado", "Local", "Status"]:
             self.assertNotIn(removed, labels)
-        self.assertIn("Ensaio | Local", labels)
+        self.assertIn("Ensaio | Local / Ambiente DEV", labels)
+        self.assertEqual([tab.label for tab in app.tabs[:7]], [
+            "◎ Cenários / Datacut", "▦ Visão geral", "◈ Modelo · BLUE / BLUP", "⌁ Diagnósticos",
+            "↗ Resultados", "◷ Produtividade × ciclo", "⇄ Índice ambiental"])
         base = next(table.value for table in app.dataframe if "trial_unit_label" in table.value.columns)
         self.assertEqual(base.columns[0], "trial_unit_label")
         next(r for r in app.radio if r.label == "Valores do gráfico de ciclo").set_value("Dados brutos").run()
         self.assertEqual(len(app.exception), 0)
         self.assertGreater(len(multiselect(app, "Genótipos no gráfico de ciclo").value), 0)
+
         multiselect(app, "Genótipos no gráfico de ciclo").set_value([]).run()
         self.assertEqual(len(app.exception), 0)
         next(b for b in app.button if b.label == "Incluir todos no gráfico de ciclo").click().run()
         self.assertGreater(len(multiselect(app, "Genótipos no gráfico de ciclo").value), 0)
+
+    def test_refit_and_restore_keep_datacut_intact(self):
+        app = AppTest.from_file("app.py", default_timeout=90).run()
+        next(r for r in app.radio if r.label == "Efeito de genótipo").set_value("Fixo → BLUE").run()
+        next(c for c in app.checkbox if "interação" in c.label).uncheck().run()
+        next(b for b in app.button if b.label == "Calcular BLUE").click().run()
+        self.assertEqual(len(app.exception), 0)
+        original = app.session_state["analysis"]
+        base = app.session_state["df"].copy()
+        selected = multiselect(app, "Parcelas sinalizadas a excluir do ajuste").value
+        self.assertGreater(len(selected), 0)
+        # Editing the current form must not change the specification of a diagnostic refit.
+        next(r for r in app.radio if r.label == "Efeito de genótipo").set_value("Aleatório → BLUP").run()
+        next(b for b in app.button if b.label == "Recalcular modelo removendo outliers").click().run()
+        self.assertEqual(len(app.exception), 0)
+        self.assertEqual(len(app.error), 0)
+        refit = app.session_state["analysis"]
+        self.assertEqual(refit["method"], "BLUE")
+        self.assertEqual(refit["nobs"], original["nobs"] - len(selected))
+        self.assertEqual(refit["genotypes"]["n"].sum(), refit["nobs"])
+        self.assertTrue(app.session_state["df"].equals(base))
+        self.assertEqual(len(refit["exclusion_audit"]), len(selected))
+        next(b for b in app.button if b.label == "Restaurar ajuste sem exclusões").click().run()
+        self.assertEqual(app.session_state["analysis"]["fit_id"], original["fit_id"])
+        self.assertNotIn("analysis_before_exclusions", app.session_state)
+        self.assertEqual(len(app.exception), 0)
+        # Another refit followed by a datacut change clears its undo/audit scope.
+        next(b for b in app.button if b.label == "Recalcular modelo removendo outliers").click().run()
+        multiselect(app, "Ano").set_value(["23"]).run()
+        self.assertNotIn("analysis", app.session_state)
+        self.assertNotIn("analysis_before_exclusions", app.session_state)
+
+    def test_old_scenario_with_prod_trial_selection_is_not_silently_expanded(self):
+        source = self.source + '''
+st.session_state["test_legacy_rejected"] = False
+try:
+    load_scenario_into_state({"app": "gdm-wheat-analysis", "version": 2,
+        "filters": {"datacut": {"trial_unit_label": ["T | L"]}}},
+        source_id, pd.DataFrame({"area": ["PROD-PLACEMENT"]}))
+except ValueError:
+    st.session_state["test_legacy_rejected"] = True
+'''
+        app = AppTest.from_string(source, default_timeout=45).run()
+        self.assertTrue(app.session_state["test_legacy_rejected"])
+        self.assertEqual(multiselect(app, "Parcela descartada DEV").value, ["no", "(Nulo)"])
+        self.assertEqual(len(app.exception), 0)
 
 
 if __name__ == "__main__":

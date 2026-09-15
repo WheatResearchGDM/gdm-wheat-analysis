@@ -14,8 +14,9 @@ import pandas as pd
 import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
-from analysis import data_fingerprint, fit_trial_model, environmental_data
+from analysis import data_fingerprint, fit_trial_model, environmental_data, diagnostic_data, refit_without_outliers
 from reporting import head_to_head_wins, cycle_data, reference_regression, model_equation
+from trial_units import add_trial_unit_columns, SOURCE_ROW
 from scipy import stats
 
 # ---------------------------------------------------------------------------
@@ -43,17 +44,18 @@ GDM_SCALE = [
 APP_DIR = Path(__file__).resolve().parent
 TEMPLATE_PATH = APP_DIR / "template_dados_fenotipicos.xlsx"
 REQUIRED_UPLOAD_COLUMNS = {
-    "trial_id", "trial_name", "location_name", "germplasm_name", "yield"
+    "trial_id", "trial_name", "germplasm_name", "yield"
 }
 MATERIAL_GID_COLUMN = "gid"
 NULL_FILTER_VALUE = "(Nulo)"
 TRIAL_KEY_COLUMN = "_trial_unit_key"
 TRIAL_LABEL_COLUMN = "trial_unit_label"
-TRIAL_DISPLAY_LABEL = "Ensaio | Local"
-MODEL_HIDDEN_COLUMNS = {"trial_id", "trial_name", TRIAL_KEY_COLUMN}
+TRIAL_DISPLAY_LABEL = "Ensaio | Local / Ambiente DEV"
+TRIAL_DEFINITION = "PROD-PLACEMENT: trial_name | environment_dev_file. Demais áreas: trial_name | location_name."
+MODEL_HIDDEN_COLUMNS = {"trial_id", "trial_name", TRIAL_KEY_COLUMN, SOURCE_ROW, "plot_id", "plot_number", "plot_id_in_source"}
 DEFAULT_FILTER_VALUES = {
     "plot_is_discarded": ["False"],
-    "missing_dev_file": ["no"],
+    "missing_dev_file": ["no", NULL_FILTER_VALUE],
 }
 
 MATERIAL_FILTER_LABELS = {
@@ -61,14 +63,13 @@ MATERIAL_FILTER_LABELS = {
     "brand": "Marca",
     "cycle": "Ciclo",
 }
-REMOVED_OBSERVATION_FILTERS = {"country_name", "state_name", "location_name"}
+REMOVED_OBSERVATION_FILTERS = {"country_name", "state_name", "location_name", "signed_status"}
 
 OBSERVATION_FILTERS = [
     ("year", "Ano"),
     ("trial_type", "Tipo de ensaio"),
-    ("signed_status", "Status"),
-    ("plot_is_discarded", "Parcela descartada"),
-    ("missing_dev_file", "Missing no arquivo DEV"),
+    ("plot_is_discarded", "Parcela descartada SEEDS"),
+    ("missing_dev_file", "Parcela descartada DEV"),
     ("country_name", "País"),
     ("macroregion_name", "Macrorregião"),
     ("microregion_name", "Microrregião"),
@@ -656,6 +657,7 @@ def generate_sample_data(n_plots=6000, seed=42):
                             "data_source": "cornerstone",
                             "year": yr,
                             "trial_id": f"TRIAL-{trial_counter:04d}",
+                            "plot_id": f"PLOT-{len(rows) + 1:06d}",
                             TRIAL_KEY_COLUMN: f"{trial_name} | {loc_name}",
                             TRIAL_LABEL_COLUMN: f"{trial_name} | {loc_name}",
                             "trial_name": trial_name,
@@ -691,7 +693,7 @@ def generate_sample_data(n_plots=6000, seed=42):
                             "fusarium_head_blight": str(rng.choice([0, 1, 3, 5], p=[0.4, 0.3, 0.2, 0.1])),
                             "lodging": str(rng.choice([0, 1, 3, 5], p=[0.5, 0.25, 0.15, 0.1])),
                         })
-    return pd.DataFrame(rows)
+    return add_trial_unit_columns(pd.DataFrame(rows))
 
 SAMPLE_DATA = generate_sample_data()
 SAMPLE_MATERIALS = (
@@ -740,58 +742,15 @@ def normalize_identifier_value(value):
     return normalized or None
 
 
-def add_trial_unit_columns(data: pd.DataFrame) -> pd.DataFrame:
-    """Create a technical trial key and a readable trial_name | location_name label."""
-    required = {"trial_id", "trial_name", "location_name"}
-    missing = sorted(required.difference(data.columns))
-    if missing:
-        raise ValueError(
-            "Colunas necessárias para identificar os ensaios ausentes: "
-            + ", ".join(missing)
-        )
-
-    enriched = data.copy()
-    normalized_trial_ids = enriched["trial_id"].map(normalize_identifier_value)
-    if normalized_trial_ids.isna().any():
-        missing_ids = int(normalized_trial_ids.isna().sum())
-        raise ValueError(
-            f"A coluna trial_id contém {missing_ids} registro(s) sem identificação."
-        )
-
-    def display_component(series):
-        values = series.astype("string").str.strip()
-        return values.mask(values.isna() | values.eq(""), NULL_FILTER_VALUE)
-
-    enriched[TRIAL_LABEL_COLUMN] = (
-        display_component(enriched["trial_name"])
-        + " | "
-        + display_component(enriched["location_name"])
-    )
-    enriched[TRIAL_KEY_COLUMN] = enriched[TRIAL_LABEL_COLUMN]
-
-    labels_per_id = (
-        enriched.assign(_normalized_trial_id=normalized_trial_ids)
-        .groupby("_normalized_trial_id")[TRIAL_LABEL_COLUMN]
-        .nunique()
-    )
-    conflicting_ids = labels_per_id[labels_per_id > 1]
-    if not conflicting_ids.empty:
-        examples = ", ".join(conflicting_ids.index.astype(str).tolist()[:5])
-        raise ValueError(
-            "O mesmo trial_id está associado a mais de uma combinação "
-            f"trial_name | location_name. Revise: {examples}."
-        )
-
-    return enriched
-
-
 @st.cache_data(show_spinner=False)
 def read_uploaded_excel(file_bytes: bytes):
     """Read observations from sheet 1 and, when present, materials from sheet 2."""
     workbook = pd.ExcelFile(BytesIO(file_bytes), engine="openpyxl")
     df = pd.read_excel(workbook, sheet_name=0)
     df.columns = [str(column).strip() for column in df.columns]
-    df = df.dropna(how="all").reset_index(drop=True)
+    df = df.drop(columns=[SOURCE_ROW], errors="ignore").dropna(how="all")
+    df[SOURCE_ROW] = df.index.to_numpy() + 2  # Excel row, accounting for the header and blank rows.
+    df = df.reset_index(drop=True)
 
     missing = sorted(REQUIRED_UPLOAD_COLUMNS.difference(df.columns))
     if missing:
@@ -944,7 +903,7 @@ def scenario_payload(source_id, material_columns, observation_columns):
         for c in observation_columns
     }
     return {
-        "app": "gdm-wheat-analysis", "version": 2,
+        "app": "gdm-wheat-analysis", "version": 3, "trial_unit_rule": "area-dependent-v1",
         "name": st.session_state.get(f"scenario_name_{source_id}") or "Cenário GDM",
         "saved_at_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "source_fingerprint": source_id,
@@ -961,11 +920,11 @@ def scenario_payload(source_id, material_columns, observation_columns):
     }
 
 
-def load_scenario_into_state(payload, source_id):
-    """Restore v1/v2 scenarios before widgets, replacing previous selections."""
+def load_scenario_into_state(payload, source_id, active_data=None):
+    """Restore scenarios before widgets, replacing previous selections."""
     if not isinstance(payload, dict) or payload.get("app") != "gdm-wheat-analysis":
         raise ValueError("Este JSON não é um cenário do GDM Wheat Analysis.")
-    if payload.get("version") not in [1, 2]:
+    if payload.get("version") not in [1, 2, 3]:
         raise ValueError("Versão de cenário não suportada.")
     filters = payload.get("filters")
     if not isinstance(filters, dict):
@@ -979,6 +938,13 @@ def load_scenario_into_state(payload, source_id):
     gids = filters.get("selected_gids", [])
     if not isinstance(gids, list):
         raise ValueError("A seleção de genótipos precisa ser uma lista.")
+    observations = {**groups["observations"], **groups["datacut"], **groups["additional"]}
+    if (payload.get("trial_unit_rule") != "area-dependent-v1" and observations.get(TRIAL_LABEL_COLUMN)
+            and active_data is not None and "area" in active_data
+            and active_data["area"].astype("string").str.strip().str.upper().eq("PROD-PLACEMENT").any()):
+        raise ValueError("Este cenário usa a regra antiga de ensaios e a base contém PROD-PLACEMENT. "
+                         "Recrie a seleção de ensaios com ambiente DEV e salve um novo cenário; "
+                         "as seleções atuais não foram alteradas.")
     # Clear old values as well as widget values; an omitted filter must not leak.
     for key in list(st.session_state):
         if key.endswith("_" + source_id) and key.startswith(("cascade_", "material_")):
@@ -1075,13 +1041,13 @@ st.markdown(
     '<div class="gdm-eyebrow">GDM · Wheat Research</div>',
     unsafe_allow_html=True,
 )
-pages = st.tabs([
-    "◎ Cenários / Datacut", "▦ Visão geral", "⇄ Índice ambiental",
-    "◈ Modelo · BLUE / BLUP", "↗ Resultados", "⌁ Diagnósticos",
-    "◷ Produtividade × ciclo",
+(scenario_page, overview_page, model_page, diagnostics_page,
+ results_page, cycle_page, environmental_page) = st.tabs([
+    "◎ Cenários / Datacut", "▦ Visão geral", "◈ Modelo · BLUE / BLUP",
+    "⌁ Diagnósticos", "↗ Resultados", "◷ Produtividade × ciclo", "⇄ Índice ambiental",
 ])
 
-with pages[0]:
+with scenario_page:
     render_page_intro(
         "Configuração", "Cenários / Datacut",
         "Defina os materiais e os ensaios. As seleções são aplicadas imediatamente a todas as análises.",
@@ -1139,7 +1105,7 @@ with pages[0]:
                 signature = hashlib.sha256(scenario_bytes + source_id.encode()).hexdigest()
                 if st.session_state.get("applied_scenario_signature") != signature:
                     saved = json.loads(scenario_bytes.decode("utf-8-sig"))
-                    load_scenario_into_state(saved, source_id)
+                    load_scenario_into_state(saved, source_id, active_data)
                     st.session_state["applied_scenario_signature"] = signature
                     st.session_state["scenario_source_mismatch"] = saved.get("source_fingerprint") not in [None, source_id]
                 st.success("Cenário e datacut restaurados.")
@@ -1177,6 +1143,7 @@ with pages[0]:
     with st.container(border=True):
         section_label("2 · Datacut — recorte dos ensaios")
         st.caption("Filtros em cascata: cada escolha limita as opções seguintes.")
+        st.caption(TRIAL_DEFINITION)
         cut_columns = st.columns(3)
         datacut_filters = [
             ("year", "Ano"), ("trial_type", "Tipo de ensaio"),
@@ -1192,10 +1159,10 @@ with pages[0]:
     with st.container(border=True):
         section_label("3 · Demais variáveis e qualidade")
         quality_filters = [
-            ("plot_is_discarded", "Parcela descartada"),
-            ("missing_dev_file", "Missing no arquivo DEV"), ("signed_status", "Status"),
+            ("plot_is_discarded", "Parcela descartada SEEDS"),
+            ("missing_dev_file", "Parcela descartada DEV"),
         ]
-        quality_columns = st.columns(3)
+        quality_columns = st.columns(2)
         for column_ui, (column, label) in zip(quality_columns, quality_filters):
             filtered_data, _ = cascading_multiselect(
                 column_ui, filtered_data, column, label, source_id,
@@ -1233,14 +1200,16 @@ with pages[0]:
     )
 
 current_signature = data_fingerprint(filtered_data)
-if "analysis" in st.session_state and st.session_state["analysis"]["signature"] != current_signature:
+if "analysis" in st.session_state and (st.session_state["analysis"]["signature"] != current_signature
+                                      or "diagnostics" not in st.session_state["analysis"]):
     st.session_state.pop("analysis")
+    st.session_state.pop("analysis_before_exclusions", None)
     st.session_state["analysis_invalidated"] = True
 
 # ---------------------------------------------------------------------------
 # Page: Dados
 # ---------------------------------------------------------------------------
-with pages[1]:
+with overview_page:
     render_page_intro(
         "Visão geral",
         "Dados fenotípicos · Trigo",
@@ -1255,7 +1224,7 @@ with pages[1]:
         "◫",
         "Ensaios",
         df[TRIAL_KEY_COLUMN].nunique() if TRIAL_KEY_COLUMN in df.columns else "-",
-        "combinações nome + local",
+        "nome + local ou ambiente DEV",
     )
     render_metric(
         c4,
@@ -1307,7 +1276,7 @@ with pages[1]:
             show_plot(location_fig)
 
     section_label("Base filtrada")
-    display_df = df.drop(columns=[TRIAL_KEY_COLUMN], errors="ignore")
+    display_df = df.drop(columns=[TRIAL_KEY_COLUMN, SOURCE_ROW], errors="ignore")
     display_df = display_df[[TRIAL_LABEL_COLUMN] + [c for c in display_df if c != TRIAL_LABEL_COLUMN]]
     st.dataframe(
         display_df,
@@ -1329,7 +1298,7 @@ with pages[1]:
 # ---------------------------------------------------------------------------
 # Page: Environmental index head-to-head
 # ---------------------------------------------------------------------------
-with pages[2]:
+with environmental_page:
     render_page_intro(
         "Comparação head-to-head",
         "Índice ambiental de produtividade",
@@ -1346,6 +1315,9 @@ with pages[2]:
         and fitted_analysis["signature"] == current_signature
     )
     use_predicted = value_source == "Preditos (BLUE / BLUP)"
+    if fitted_analysis is not None and fitted_analysis.get("excluded_rows"):
+        st.caption(f"O ajuste atual exclui {len(fitted_analysis['excluded_rows'])} parcela(s). "
+                   "Preditos usam esse ajuste; Dados brutos mantêm o datacut completo, sem essas exclusões.")
     if use_predicted and not prediction_ready:
         st.info("Calcule BLUE ou BLUP para yield na aba Modelo · BLUE / BLUP com o datacut atual. "
                 "Para explorar antes do ajuste, selecione Dados brutos.")
@@ -1617,10 +1589,10 @@ with pages[2]:
 # ---------------------------------------------------------------------------
 # Page: Modelo Misto
 # ---------------------------------------------------------------------------
-with pages[3]:
+with model_page:
     render_page_intro(
         "Modelagem", "Calcular BLUE e BLUP",
-        "A escolha do efeito de genótipo determina a estimativa. Ensaio = nome do ensaio | local.",
+        "A escolha do efeito de genótipo determina a estimativa. " + TRIAL_DEFINITION,
     )
     df = st.session_state["df"].copy()
     if df.empty:
@@ -1663,7 +1635,7 @@ with pages[3]:
             for j, effect in enumerate(random_eff, 1):
                 st.caption(f"U{j}: {column_display_name(effect)} — aleatório.")
             if include_gxe:
-                st.caption("uᵍ×ᵉ: interação aleatória genótipo × Ensaio | Local.")
+                st.caption("uᵍ×ᵉ: interação aleatória genótipo × unidade de ensaio.")
             st.caption("i identifica a parcela; g(i) e e(i) são seu genótipo e ensaio. "
                        "Ilustração das escolhas acima, não uma confirmação de que o modelo já foi ajustado.")
         st.caption(
@@ -1684,6 +1656,7 @@ with pages[3]:
                         random=random_eff, interaction=include_gxe,
                     )
                     st.session_state["analysis"] = analysis
+                    st.session_state.pop("analysis_before_exclusions", None)
                     st.session_state["analysis_invalidated"] = False
                     st.rerun()
                 except Exception as exc:
@@ -1695,6 +1668,9 @@ with pages[3]:
             if saved_fit["omitted"]:
                 st.warning(f"{saved_fit['omitted']} parcela(s) excluída(s) por valores ausentes "
                            "ou não finitos nas variáveis do modelo.")
+            if saved_fit.get("excluded_rows"):
+                st.warning(f"Ajuste sem {len(saved_fit['excluded_rows'])} parcela(s) excluída(s) no diagnóstico. "
+                           "Calcular novamente nesta aba inclui todas as parcelas válidas do datacut.")
             if saved_fit["warnings"]:
                 with st.expander("Avisos do ajuste"):
                     for message in saved_fit["warnings"]:
@@ -1702,13 +1678,16 @@ with pages[3]:
 # ---------------------------------------------------------------------------
 # Page: Resultados
 # ---------------------------------------------------------------------------
-with pages[4]:
+with results_page:
     render_page_intro("Estimativas", "Resultados · BLUE / BLUP",
                       "Médias ajustadas, predições por ensaio e componentes de variância.")
     analysis = st.session_state.get("analysis")
     if analysis is None:
         st.info("Calcule BLUE ou BLUP na aba Modelo com o datacut atual.")
     else:
+        if analysis.get("excluded_rows"):
+            st.info(f"Resultados recalculados sem {len(analysis['excluded_rows'])} parcela(s) selecionada(s) "
+                    "no diagnóstico. n e predições refletem somente as parcelas usadas no ajuste atual.")
         result_tabs = st.tabs(["Genótipos e ranking", "Predições por ensaio", "Variâncias", "Resumo"])
         with result_tabs[0]:
             estimates = analysis["genotypes"]
@@ -1754,7 +1733,7 @@ with pages[4]:
                 "raw_mean": "Média bruta", "n": "Parcelas",
             })
             trial_choices = sorted(cells[TRIAL_DISPLAY_LABEL].unique())
-            chosen_trial = st.selectbox("Ensaio | Local — predições", trial_choices, key="prediction_trial")
+            chosen_trial = st.selectbox(f"{TRIAL_DISPLAY_LABEL} — predições", trial_choices, key="prediction_trial")
             selected_cells = cells.loc[cells[TRIAL_DISPLAY_LABEL].eq(chosen_trial)].sort_values("Predito")
             trial_fig = px.bar(selected_cells, x="Predito", y="germplasm_name", orientation="h",
                 color="Predito", color_continuous_scale=GDM_SCALE,
@@ -1797,36 +1776,121 @@ with pages[4]:
             st.write("Efeitos aleatórios: " + ", ".join(map(column_display_name, analysis["random"])))
             st.write("Interação genótipo × ensaio: " + ("Sim" if analysis["interaction"] else "Não"))
 
-with pages[5]:
+with diagnostics_page:
     render_page_intro("Qualidade", "Diagnósticos do ajuste",
                       "Resíduos por parcela e incerteza dos coeficientes fixos.")
     analysis = st.session_state.get("analysis")
     if analysis is None:
         st.info("Calcule BLUE ou BLUP na aba Modelo com o datacut atual.")
     else:
-        fitted = analysis["fitted"]
-        residuals = analysis["residuals"]
+        st.caption(f"Ajuste exibido: {analysis['method']} para {analysis['response']} · "
+                   f"{analysis['nobs']} parcelas usadas · {analysis['omitted']} omitidas por dados ausentes · "
+                   f"{len(analysis.get('excluded_rows', []))} excluídas pelo diagnóstico.")
+        threshold = st.number_input("Limite de sinalização |resíduo / σ residual|",
+                                    min_value=1., max_value=10., value=3., step=.25, key="outlier_threshold")
+        diagnostic = diagnostic_data(analysis, threshold)
+        diagnostic["Sinalização"] = np.where(diagnostic["outlier"], "Candidato a outlier", "Demais parcelas")
+        if not np.isfinite(diagnostic["scaled_residual"]).all():
+            st.warning("Variância residual nula ou inválida: não é possível sinalizar outliers por esse critério.")
+        st.caption("Critério exploratório: |resíduo| / √variância residual acima do limite. "
+                   "Não é um teste formal nem um resíduo studentizado; revise as parcelas antes de excluir. "
+                   "Cada ponto mostra o plot e a linha do Excel, inclusive quando plot_id se repete.")
+        hover_columns = ["plot_label", SOURCE_ROW, TRIAL_LABEL_COLUMN, "germplasm_name",
+                         "observed", "fitted", "residual", "scaled_residual"]
+        hover_template = ("Plot: %{customdata[0]}<br>Linha: %{customdata[1]}<br>"
+                          "%{customdata[2]}<br>Genótipo: %{customdata[3]}<br>"
+                          "Observado: %{customdata[4]:,.2f}<br>Ajustado: %{customdata[5]:,.2f}<br>"
+                          "Resíduo: %{customdata[6]:,.2f}<br>Resíduo / σ: %{customdata[7]:.3f}<extra></extra>")
+        diagnostic_colors = {"Candidato a outlier": GDM_CORAL, "Demais parcelas": GDM_NAVY}
         chart_left, chart_right = st.columns(2)
         with chart_left:
-            fig = px.scatter(x=fitted, y=residuals, opacity=.45,
-                             labels={"x": "Ajustados por parcela", "y": "Resíduos"},
+            fig = px.scatter(diagnostic, x="fitted", y="residual", color="Sinalização", opacity=.7,
+                             color_discrete_map=diagnostic_colors, custom_data=hover_columns,
+                             labels={"fitted": "Ajustados por parcela", "residual": "Resíduos"},
                              title="Resíduos × ajustados")
+            fig.update_traces(hovertemplate=hover_template)
             fig.add_hline(y=0, line_dash="dash", line_color=GDM_CORAL)
             show_plot(fig)
         with chart_right:
-            quantiles = stats.norm.ppf((np.arange(len(residuals)) + .5) / len(residuals))
-            show_plot(px.scatter(x=quantiles, y=np.sort(residuals),
-                                 labels={"x": "Quantis normais", "y": "Resíduos ordenados"},
-                                 title="QQ plot"))
+            qq = diagnostic.sort_values("residual", kind="stable").copy()
+            qq["quantile"] = stats.norm.ppf((np.arange(len(qq)) + .5) / len(qq))
+            qq_fig = px.scatter(qq, x="quantile", y="residual", color="Sinalização",
+                                color_discrete_map=diagnostic_colors, custom_data=hover_columns,
+                                labels={"quantile": "Quantis normais", "residual": "Resíduos ordenados"},
+                                title="QQ plot · identificação das parcelas")
+            qq_fig.update_traces(hovertemplate=hover_template)
+            sigma = np.sqrt(float(analysis["result"].scale))
+            if np.isfinite(sigma) and sigma > 0:
+                reference_x = np.array([qq["quantile"].min(), qq["quantile"].max()])
+                qq_fig.add_trace(go.Scatter(x=reference_x, y=sigma * reference_x, mode="lines",
+                    line=dict(color=GDM_GRAY, dash="dash"), name="Referência normal", hoverinfo="skip"))
+            show_plot(qq_fig)
+        flagged = diagnostic.loc[diagnostic["outlier"]].sort_values(
+            "scaled_residual", key=lambda value: value.abs(), ascending=False)
+        display_names = {SOURCE_ROW: "Linha de origem", "plot_label": "Plot",
+                         TRIAL_LABEL_COLUMN: TRIAL_DISPLAY_LABEL, "germplasm_name": "Genótipo",
+                         "observed": "Observado", "fitted": "Ajustado", "residual": "Resíduo",
+                         "scaled_residual": "Resíduo / σ residual", "threshold": "Limite usado"}
+        section_label("Revisar parcelas sinalizadas")
+        if flagged.empty:
+            st.info("Nenhuma parcela foi sinalizada com o limite atual.")
+        else:
+            st.dataframe(flagged[hover_columns].rename(columns=display_names), width="stretch", hide_index=True)
+        row_labels = {row[SOURCE_ROW]: f"Plot {row['plot_label']} · linha {row[SOURCE_ROW]} · "
+                      f"{row[TRIAL_LABEL_COLUMN]} · {row['germplasm_name']}" for _, row in flagged.iterrows()}
+        chosen_outliers = st.multiselect("Parcelas sinalizadas a excluir do ajuste", list(row_labels),
+            default=list(row_labels), format_func=lambda key: row_labels[key],
+            key=f"outliers_{analysis['fit_id']}_{threshold}",
+            help="Exclusão por linha, não por plot_id. Limpar a seleção não exclui nenhuma parcela.")
+        st.caption("O botão refaz uma única vez o mesmo modelo salvo (resposta, BLUE/BLUP e efeitos), "
+                   "sem as parcelas selecionadas. Não altera o Excel nem a Base filtrada. "
+                   "Novos candidatos após o ajuste exigem outra revisão; não há remoção automática em sequência.")
+        refit_column, restore_column = st.columns(2)
+        if refit_column.button("Recalcular modelo removendo outliers", type="primary",
+                               disabled=not chosen_outliers, width="stretch"):
+            with st.spinner("Recalculando o modelo sem as parcelas selecionadas…"):
+                try:
+                    new_fit = refit_without_outliers(st.session_state["df"], analysis, chosen_outliers, threshold)
+                    st.session_state.setdefault("analysis_before_exclusions", analysis)
+                    st.session_state["analysis"] = new_fit
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"Não foi possível recalcular: {exc}. O ajuste anterior foi mantido.")
+        if restore_column.button("Restaurar ajuste sem exclusões", width="stretch",
+                                 disabled="analysis_before_exclusions" not in st.session_state):
+            st.session_state["analysis"] = st.session_state.pop("analysis_before_exclusions")
+            st.rerun()
+        if analysis.get("excluded_rows"):
+            baseline = st.session_state.get("analysis_before_exclusions")
+            if baseline is not None:
+                st.dataframe(pd.DataFrame({"Ajuste": ["Antes das exclusões", "Atual"],
+                    "Parcelas utilizadas": [baseline["nobs"], analysis["nobs"]],
+                    "Variância residual": [float(baseline["result"].scale), float(analysis["result"].scale)]}),
+                    hide_index=True, width="stretch")
+            with st.expander("Histórico das parcelas excluídas", expanded=True):
+                audit = analysis["exclusion_audit"].rename(columns=display_names)
+                st.dataframe(audit, hide_index=True, width="stretch")
+                st.download_button("Baixar histórico de exclusões", audit.to_csv(index=False),
+                                   "exclusoes_outliers.csv", "text/csv")
+            st.caption("As exclusões pertencem ao ajuste atual e não são salvas no JSON de filtros. "
+                       "Mudar o datacut invalida o ajuste e suas exclusões.")
+        with st.expander("Diagnóstico completo por parcela"):
+            diagnostic_export = diagnostic.rename(columns=display_names)
+            st.dataframe(diagnostic_export, hide_index=True, width="stretch")
+            st.download_button("Baixar diagnóstico CSV", diagnostic_export.to_csv(index=False),
+                               "diagnostico_parcelas.csv", "text/csv")
         st.dataframe(analysis["fixed_coefficients"], width="stretch", hide_index=True)
 
 
-with pages[6]:
+with cycle_page:
     render_page_intro("Ciclo dos materiais", "Produtividade × dias ao espigamento",
                       "Um ponto por genótipo, vinculado ao cadastro auxiliar pelo gid.")
     cycle_source = st.radio("Valores do gráfico de ciclo", ["Estimados (BLUE / BLUP)", "Dados brutos"],
                             horizontal=True, key="cycle_value_source")
     cycle_fit = st.session_state.get("analysis") if cycle_source.startswith("Estimados") else None
+    if st.session_state.get("analysis", {}).get("excluded_rows"):
+        st.caption("Estimados usam o ajuste após as exclusões do diagnóstico. Dados brutos preservam "
+                   "o datacut completo, incluindo as parcelas excluídas apenas do modelo.")
     cycle_ready = cycle_source == "Dados brutos" or (
         cycle_fit is not None and cycle_fit["response"] == "yield"
         and cycle_fit["signature"] == current_signature)

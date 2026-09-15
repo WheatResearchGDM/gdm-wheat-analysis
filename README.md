@@ -8,30 +8,35 @@ O aplicativo inicia com dados sintéticos, mas aceita arquivos Excel (`.xlsx`) e
 
 Use **Arquivo Excel** na aba **Cenários / Datacut**. A primeira aba da planilha contém as observações e precisa ter:
 
-- `trial_id`: identificador único do ensaio;
+- `trial_id`: identificador de referência da origem;
 - `trial_name`: nome do ensaio;
-- `location_name`: local do ensaio;
+- `location_name`: local do ensaio (obrigatório fora de PROD-PLACEMENT);
 - `germplasm_name`: genótipo;
 - `yield`: produtividade numérica.
 
-O app usa `trial_name | location_name` como unidade analítica de ensaio nos
-filtros, tabelas, gráficos e comparações. O `trial_id` permanece como referência
-técnica, e a importação valida que cada ID corresponda a uma única combinação de
-nome e local.
+Para `area = PROD-PLACEMENT`, a unidade de ensaio é `trial_name | environment_dev_file`.
+Nas demais áreas (ou sem coluna `area`), é `trial_name | location_name`. Essa regra
+vale para modelos, interação G×E, contagens, tabelas, gráficos e ensaios comuns.
+Em PROD-PLACEMENT, `environment_dev_file` e `trial_name` devem estar preenchidos;
+o app não substitui ambiente DEV ausente pelo local. Maiúsculas/minúsculas e espaços
+externos em `area` são normalizados. O mesmo `trial_id` pode ter vários ambientes DEV,
+e vários IDs com a mesma combinação pertencem ao mesmo ensaio. Fora dessa área,
+a validação de um nome/local por ID continua ativa. Rótulos coincidentes entre as
+duas regras são desambiguados, sem unir ensaios distintos.
 
 Quando houver uma segunda aba, ela será usada como cadastro de materiais e precisa conter `gid`. A coluna `gid` da segunda aba é vinculada à coluna `gid` da primeira. Os filtros de materiais são categoria, marca e ciclo; os genótipos são exibidos pelo `germplasm_name`. Materiais sem observações na primeira aba não aparecem como opções de análise. Sem seleção individual, todos os materiais do recorte são incluídos. Nome de produção/comercial, região comercial, tipo de elemento e dias de espigamento/maturidade permanecem na fonte, mas não são filtros.
 
-O botão **Baixar template Excel** fornece os 72 cabeçalhos do arquivo de referência. O índice ambiental compara dois genótipos apenas nas combinações `trial_name | location_name` em que ambos foram avaliados.
+O botão **Baixar template Excel** fornece os 72 cabeçalhos do arquivo de referência, incluindo `environment_dev_file` e identificadores de parcelas. O índice ambiental compara dois genótipos apenas nas unidades de ensaio em que ambos foram avaliados.
 
-Todos os controles ficam em **Cenários / Datacut**, em três blocos: cenário/materiais, datacut dos ensaios, e demais variáveis/qualidade. Os filtros são aplicados imediatamente e funcionam em cascata. Valores ausentes aparecem como **(Nulo)**. Quando disponíveis, o recorte começa com `plot_is_discarded = False` e `missing_dev_file = no`. Limpar um filtro inclui todas as suas opções. As abas preservam as seleções ao navegar.
+Todos os controles ficam em **Cenários / Datacut**, em três blocos: cenário/materiais, datacut dos ensaios, e demais variáveis/qualidade. Os filtros são aplicados imediatamente e funcionam em cascata. Valores ausentes aparecem como **(Nulo)**. Quando disponíveis, **Parcela descartada SEEDS** começa com `plot_is_discarded = False` e **Parcela descartada DEV** com `missing_dev_file = no` **ou nulo**. O filtro Status foi removido, inclusive de Outras variáveis. Limpar um filtro inclui todas as suas opções. As abas preservam as seleções ao navegar. Defaults valem para novas seleções; um cenário carregado mantém os valores explicitamente salvos.
 
 Na visão geral, o gráfico de médias por ensaio ocupa a largura da página, abaixo da distribuição de produtividade, com rolagem vertical para ler todas as barras.
 
-A navegação principal permanece no topo durante a rolagem. País, estado e local não aparecem como filtros separados; use **Ensaio | Local**, que também é a primeira coluna da Base filtrada.
+A navegação principal permanece no topo durante a rolagem, na ordem: **Cenários / Datacut → Visão geral → Modelo → Diagnósticos → Resultados → Produtividade × ciclo → Índice ambiental**. País, estado e local não aparecem como filtros separados; use **Ensaio | Local / Ambiente DEV**, que também é a primeira coluna da Base filtrada.
 
 ## Salvar e abrir cenários
 
-**Salvar cenário + datacut (JSON)** baixa o nome, os filtros de materiais, GIDs, datacut e demais filtros/qualidade. O arquivo não contém observações nem um modelo ajustado. Para restaurar, carregue a planilha e use **Abrir cenário e datacut (JSON)**. A versão 2 separa `material_attributes`, `selected_gids`, `datacut` e `additional`; arquivos da versão 1 continuam aceitos. Abrir um cenário substitui as seleções anteriores. Se a base mudou, somente opções presentes são aplicadas.
+**Salvar cenário + datacut (JSON)** baixa o nome, os filtros de materiais, GIDs, datacut e demais filtros/qualidade. O arquivo não contém observações, modelo ou exclusões de outliers. Para restaurar, carregue a planilha e use **Abrir cenário e datacut (JSON)**. A versão 3 mantém os grupos da versão 2 e registra `trial_unit_rule = area-dependent-v1`. Arquivos v1/v2 continuam aceitos, exceto quando têm seleção de ensaios e a base contém PROD-PLACEMENT: nesse caso, recrie a seleção para a regra DEV, sem conversão silenciosa dos ensaios antigos. Status não é reaplicado. Abrir um cenário válido substitui as seleções anteriores. Se a base mudou, somente opções presentes são aplicadas.
 
 ## BLUE, BLUP e índice ambiental
 
@@ -60,10 +65,37 @@ O seletor de genótipos altera apenas o gráfico e sua regressão. A regressão 
 
 Referência técnica: [componentes de variância e fatores cruzados no statsmodels](https://www.statsmodels.org/stable/examples/notebooks/generated/variance_components.html).
 
+## Diagnósticos e revisão de outliers
+
+O QQ plot e o gráfico de resíduos exibem o plot, a linha da primeira aba do Excel,
+o genótipo, a unidade de ensaio, a resposta observada, o ajustado e o resíduo.
+A correspondência com a linha original é preservada após omitir ausências e ordenar
+o QQ plot. `plot_id` é preferido para exibição, com `plot_id_in_source` e `plot_number`
+como alternativas; na ausência deles, a linha continua identificando o registro.
+IDs repetidos não provocam exclusões em conjunto: cada exclusão usa a linha única da origem.
+
+A sinalização inicial usa `abs(resíduo) / sqrt(variância residual) > 3`, com limite
+ajustável de 1 a 10. É uma triagem exploratória dos resíduos condicionais, **não**
+um teste formal, uma avaliação de influência ou um resíduo studentizado. Sem variância
+residual positiva, não há sinalização por esse critério. A lista permite revisar
+quais candidatos excluir. O [NIST recomenda investigar observações suspeitas](https://www.itl.nist.gov/div898/handbook/eda/section3/eda33a8.htm), não rejeitá-las automaticamente.
+
+**Recalcular modelo removendo outliers** refaz uma única vez o modelo salvo, preservando
+resposta, método BLUE/BLUP, efeitos e interação, mesmo que o formulário de Modelo
+tenha sido editado depois. Predições, variâncias, n, ranking, diagnóstico, índice
+ambiental estimado e ciclo estimado passam a usar o novo ajuste. Dados brutos e a
+Base filtrada permanecem intactos. Falhas de ajuste mantêm o modelo anterior.
+Novos candidatos exigem nova seleção e clique; não existe limpeza iterativa automática.
+
+O histórico de exclusões (incluindo resíduos anteriores e limite usado) pode ser
+baixado em CSV. **Restaurar ajuste sem exclusões** recupera o ajuste anterior à primeira
+remoção. O diagnóstico compara n e variância residual antes/depois. Alterar datacut/base
+invalida o ajuste e seu histórico; calcular novamente em Modelo recomeça sem exclusões.
+
 ## Verificar alterações
 
 ```bash
-python -X utf8 -m unittest test_analysis test_reporting test_app -v
+python -X utf8 -m unittest test_trial_units test_analysis test_diagnostics test_reporting test_app -v
 ```
 
 Os testes verificam BLUE contra OLS independente, redução dos efeitos BLUP, predições contra modelo denso, cenários v1/v2, filtros e invalidação de predições.
@@ -80,7 +112,7 @@ python -m streamlit run app.py
 
 ## Publicar
 
-Envie os arquivos do projeto ao GitHub, incluindo **app.py, analysis.py e reporting.py** (obrigatórios), `requirements.txt`, `.streamlit/config.toml` e o template. No Streamlit Community Cloud, escolha:
+Envie os arquivos do projeto ao GitHub, incluindo **app.py, analysis.py, reporting.py e trial_units.py** (obrigatórios), `requirements.txt`, `.streamlit/config.toml` e o template. No Streamlit Community Cloud, escolha:
 
 - repositório: este projeto;
 - branch: a branch principal;
