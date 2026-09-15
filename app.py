@@ -15,6 +15,7 @@ import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
 from analysis import data_fingerprint, fit_trial_model, environmental_data
+from reporting import head_to_head_wins, cycle_data, reference_regression, model_equation
 from scipy import stats
 
 # ---------------------------------------------------------------------------
@@ -56,16 +57,11 @@ DEFAULT_FILTER_VALUES = {
 }
 
 MATERIAL_FILTER_LABELS = {
-    "business_region": "Região comercial",
-    "production_name": "Nome de produção",
-    "commercial_name": "Nome comercial",
     "category": "Categoria",
     "brand": "Marca",
     "cycle": "Ciclo",
-    "days_to_spike": "Dias ao espigamento",
-    "days_to_maturity": "Dias à maturidade",
-    "Tipo de elemento": "Tipo de elemento",
 }
+REMOVED_OBSERVATION_FILTERS = {"country_name", "state_name", "location_name"}
 
 OBSERVATION_FILTERS = [
     ("year", "Ano"),
@@ -568,6 +564,18 @@ button[data-baseweb="tab"][aria-selected="true"] {
     color: #FFFFFF;
 }
 
+/* Only the main page navigation sticks; nested result tabs scroll normally. */
+[data-testid="stTabs"]:not([data-testid="stTabs"] [data-testid="stTabs"]) > div > div:has(> [role="tablist"]) {
+    position: sticky;
+    top: 3.75rem;
+    z-index: 990;
+    background: #F5F7F2;
+    padding: .5rem .2rem;
+    box-shadow: 0 7px 14px rgba(9,36,59,.10);
+    border-radius: 12px;
+}
+button[data-baseweb="tab"] p { color: inherit !important; }
+
 .stButton > button[kind="primary"],
 .stDownloadButton > button {
     background: var(--gdm-lime);
@@ -703,6 +711,7 @@ SAMPLE_MATERIALS = (
             "CHECK",
         ),
         cycle="Não informado",
+        days_to_spike=lambda frame: 55 + np.arange(len(frame)) % 35,
         **{"Tipo de elemento": "Item"},
     )
 )
@@ -1005,6 +1014,8 @@ def column_display_name(column: str) -> str:
     """Return a readable label for internal analysis columns."""
     if column == TRIAL_LABEL_COLUMN:
         return TRIAL_DISPLAY_LABEL
+    if column == "germplasm_name":
+        return "Genótipo"
     return column
 
 
@@ -1067,6 +1078,7 @@ st.markdown(
 pages = st.tabs([
     "◎ Cenários / Datacut", "▦ Visão geral", "⇄ Índice ambiental",
     "◈ Modelo · BLUE / BLUP", "↗ Resultados", "⌁ Diagnósticos",
+    "◷ Produtividade × ciclo",
 ])
 
 with pages[0]:
@@ -1168,9 +1180,8 @@ with pages[0]:
         cut_columns = st.columns(3)
         datacut_filters = [
             ("year", "Ano"), ("trial_type", "Tipo de ensaio"),
-            ("country_name", "País"), ("macroregion_name", "Macrorregião"),
-            ("microregion_name", "Microrregião"), ("state_name", "Estado"),
-            ("location_name", "Local"), (TRIAL_LABEL_COLUMN, TRIAL_DISPLAY_LABEL),
+            ("macroregion_name", "Macrorregião"),
+            ("microregion_name", "Microrregião"), (TRIAL_LABEL_COLUMN, TRIAL_DISPLAY_LABEL),
             ("condition_file", "Condição"),
         ]
         for index, (column, label) in enumerate(datacut_filters):
@@ -1191,7 +1202,8 @@ with pages[0]:
                 DEFAULT_FILTER_VALUES.get(column),
             )
         dedicated_filters = {c for c, _ in datacut_filters + quality_filters} | {"gid", "germplasm_name"}
-        other_filters = [c for c in CATEGORICAL_COLS if c not in dedicated_filters and c in active_data]
+        other_filters = [c for c in CATEGORICAL_COLS if c not in dedicated_filters
+                         and c not in REMOVED_OBSERVATION_FILTERS and c in active_data]
         with st.expander("Outras variáveis"):
             other_columns = st.columns(3)
             for index, column in enumerate(other_filters):
@@ -1296,6 +1308,7 @@ with pages[1]:
 
     section_label("Base filtrada")
     display_df = df.drop(columns=[TRIAL_KEY_COLUMN], errors="ignore")
+    display_df = display_df[[TRIAL_LABEL_COLUMN] + [c for c in display_df if c != TRIAL_LABEL_COLUMN]]
     st.dataframe(
         display_df,
         width="stretch",
@@ -1542,6 +1555,24 @@ with pages[2]:
                     )
                     show_plot(fig)
 
+                    section_label("Vitórias nos ensaios comuns")
+                    wins = head_to_head_wins(plot_data, genotype_a, genotype_b)
+                    win_fig = go.Figure(go.Pie(
+                        labels=wins["Resultado"], values=wins["Ensaios"], hole=.6, sort=False,
+                        marker=dict(colors=[GDM_LIME, GDM_NAVY, GDM_GRAY]),
+                        texttemplate="%{label}<br>%{percent:.1%} · %{value} ensaios",
+                        textposition="outside", automargin=True,
+                        hovertemplate="%{label}: %{value} ensaios (%{percent:.1%})<extra></extra>",
+                    ))
+                    win_fig.update_layout(title="Vitórias por genótipo", height=430,
+                        annotations=[dict(text=f"{len(common_trials)}<br>ensaios", x=.5, y=.5,
+                                          font_size=19, showarrow=False)])
+                    show_plot(win_fig)
+                    st.caption("Uma vitória por ensaio comum, usando o modo bruto/predito selecionado. "
+                               "Empates são separados; diferenças até 0,00000001 são tratadas como empate numérico.")
+                    st.dataframe(wins, hide_index=True, width="stretch",
+                        column_config={"Percentual": st.column_config.NumberColumn("% dos ensaios", format="%.1f%%")})
+
                     section_label("Detalhamento dos ambientes comuns")
                     comparison_table = (
                         plot_data.pivot(
@@ -1621,6 +1652,20 @@ with pages[3]:
                 help="Fatores cruzados. Para repetição/bloco, crie uma coluna com ensaio | repetição.",
             )
         include_gxe = st.checkbox("Incluir interação genótipo × ensaio (aleatória)", value=True)
+        with st.container(border=True):
+            section_label("Equação ilustrativa do modelo selecionado")
+            st.latex(model_equation(method, fixed, random_eff, include_gxe))
+            st.caption(f"y: {response} · μ: intercepto · "
+                       + ("G: efeito fixo de genótipo (BLUE)" if method == "BLUE" else
+                          "uᵍ: efeito aleatório de genótipo (BLUP)") + " · ε: resíduo da parcela.")
+            for j, effect in enumerate(fixed, 1):
+                st.caption(f"F{j}: {column_display_name(effect)} — fixo (fator ou covariável).")
+            for j, effect in enumerate(random_eff, 1):
+                st.caption(f"U{j}: {column_display_name(effect)} — aleatório.")
+            if include_gxe:
+                st.caption("uᵍ×ᵉ: interação aleatória genótipo × Ensaio | Local.")
+            st.caption("i identifica a parcela; g(i) e e(i) são seu genótipo e ensaio. "
+                       "Ilustração das escolhas acima, não uma confirmação de que o modelo já foi ajustado.")
         st.caption(
             "BLUE: médias ajustadas com genótipo fixo. BLUP: médias preditas com genótipo aleatório "
             "e efeito genotípico separado. As médias gerais dão peso igual aos ensaios; "
@@ -1667,7 +1712,21 @@ with pages[4]:
         result_tabs = st.tabs(["Genótipos e ranking", "Predições por ensaio", "Variâncias", "Resumo"])
         with result_tabs[0]:
             estimates = analysis["genotypes"]
-            st.dataframe(estimates, width="stretch", hide_index=True)
+            estimate_min, estimate_max = estimates["Estimativa"].round(1).min(), estimates["Estimativa"].round(1).max()
+            def estimate_color(value):
+                value = round(value, 1)
+                fraction = (value - estimate_min) / (estimate_max - estimate_min) if estimate_max > estimate_min else .5
+                color = GDM_NAVY if fraction >= .75 else GDM_LIME if fraction >= .4 else GDM_SKY
+                foreground = "#FFFFFF" if fraction >= .75 else GDM_NAVY
+                return f"background-color: {color}; color: {foreground}; font-weight: bold"
+            st.dataframe(estimates.style.map(estimate_color, subset=["Estimativa"]),
+                width="stretch", hide_index=True, height=480,
+                column_config={"germplasm_name": "Genótipo",
+                    "Estimativa": st.column_config.NumberColumn(f"Estimativa · {analysis['method']}", format="%.1f"),
+                    "n": st.column_config.NumberColumn("n · parcelas", help="Parcelas válidas efetivamente usadas no ajuste para este genótipo.", format="%d"),
+                    "Ensaios": st.column_config.NumberColumn("n · ensaios", format="%d")})
+            st.caption("Cor da estimativa: valores menores em azul-claro, intermediários em verde e maiores em azul-escuro. "
+                       "n conta as parcelas usadas após excluir ausências nas variáveis do modelo; não é o número de predições.")
             st.caption(
                 "Estimativa: média sobre os ensaios com pesos iguais e a mesma distribuição "
                 "dos demais efeitos fixos para todos os genótipos. Interações aleatórias e "
@@ -1694,6 +1753,18 @@ with pages[4]:
                 TRIAL_LABEL_COLUMN: TRIAL_DISPLAY_LABEL, "predicted": "Predito",
                 "raw_mean": "Média bruta", "n": "Parcelas",
             })
+            trial_choices = sorted(cells[TRIAL_DISPLAY_LABEL].unique())
+            chosen_trial = st.selectbox("Ensaio | Local — predições", trial_choices, key="prediction_trial")
+            selected_cells = cells.loc[cells[TRIAL_DISPLAY_LABEL].eq(chosen_trial)].sort_values("Predito")
+            trial_fig = px.bar(selected_cells, x="Predito", y="germplasm_name", orientation="h",
+                color="Predito", color_continuous_scale=GDM_SCALE,
+                hover_data=["Parcelas", "Média bruta"],
+                labels={"germplasm_name": "Genótipo", "Predito": f"{analysis['method']} · {analysis['response']}"},
+                title=f"Predições · {chosen_trial}")
+            trial_fig.update_layout(height=max(420, 29 * len(selected_cells)), coloraxis_showscale=False)
+            with st.container(height=610, border=True):
+                show_plot(trial_fig)
+            st.caption("O filtro acima altera somente o gráfico. A tabela e o download abaixo incluem todos os ensaios do ajuste.")
             st.dataframe(cells, width="stretch", hide_index=True)
             st.caption("Somente combinações observadas no ajuste. Outros efeitos aleatórios "
                        "(ex.: blocos) são fixados em zero para comparar genótipos.")
@@ -1703,6 +1774,18 @@ with pages[4]:
             variance = analysis["variance"].copy()
             variance["Componente"] = variance["Componente"].map(column_display_name)
             st.dataframe(variance, width="stretch", hide_index=True)
+            if variance["Variância"].ge(0).all() and variance["Variância"].sum() > 0:
+                variance_fig = px.pie(variance, names="Componente", values="Variância", hole=.55,
+                    color_discrete_sequence=[GDM_LIME, GDM_NAVY, GDM_GRAY, GDM_CORAL, GDM_SKY],
+                    title="Proporção dos componentes de variância")
+                variance_fig.update_traces(texttemplate="%{label}<br>%{percent:.1%}", textposition="outside", automargin=True,
+                    hovertemplate="%{label}<br>Variância: %{value:,.2f}<br>%{percent:.1%}<extra></extra>")
+                variance_fig.update_layout(height=460)
+                show_plot(variance_fig)
+                st.caption("Proporções calculadas sobre a soma dos componentes aleatórios e do resíduo. "
+                           "Efeitos fixos não entram nesta soma; isto não representa R² nem herdabilidade.")
+            else:
+                st.info("Não há componentes positivos de variância para representar em pizza.")
             if analysis["method"] == "BLUE":
                 st.caption("Genótipo fixo: não se estima variância genotípica nem herdabilidade neste ajuste.")
             else:
@@ -1736,3 +1819,83 @@ with pages[5]:
                                  labels={"x": "Quantis normais", "y": "Resíduos ordenados"},
                                  title="QQ plot"))
         st.dataframe(analysis["fixed_coefficients"], width="stretch", hide_index=True)
+
+
+with pages[6]:
+    render_page_intro("Ciclo dos materiais", "Produtividade × dias ao espigamento",
+                      "Um ponto por genótipo, vinculado ao cadastro auxiliar pelo gid.")
+    cycle_source = st.radio("Valores do gráfico de ciclo", ["Estimados (BLUE / BLUP)", "Dados brutos"],
+                            horizontal=True, key="cycle_value_source")
+    cycle_fit = st.session_state.get("analysis") if cycle_source.startswith("Estimados") else None
+    cycle_ready = cycle_source == "Dados brutos" or (
+        cycle_fit is not None and cycle_fit["response"] == "yield"
+        and cycle_fit["signature"] == current_signature)
+    if not cycle_ready:
+        st.info("Calcule BLUE ou BLUP para yield no datacut atual ou escolha Dados brutos.")
+    else:
+        try:
+            cycle_points, excluded_cycle = cycle_data(st.session_state["df"], available_materials, cycle_fit)
+        except ValueError as exc:
+            st.info(str(exc))
+        else:
+            if excluded_cycle:
+                st.warning(f"{excluded_cycle} genótipo(s) sem dias ao espigamento válidos ou com vínculo gid ambíguo "
+                           "foram omitidos deste gráfico. A base e o ajuste não foram alterados.")
+            if cycle_points.empty:
+                st.info("Não há materiais com dias ao espigamento válidos neste recorte.")
+            else:
+                cycle_options = sorted(cycle_points["germplasm_name"].unique())
+                cycle_key = f"cycle_genotypes_{source_id}"
+                if cycle_key not in st.session_state:
+                    st.session_state[cycle_key] = cycle_options
+                else:
+                    st.session_state[cycle_key] = [g for g in st.session_state[cycle_key] if g in cycle_options]
+                if st.button("Incluir todos no gráfico de ciclo"):
+                    st.session_state[cycle_key] = cycle_options
+                included_cycle = st.multiselect("Genótipos no gráfico de ciclo", cycle_options, key=cycle_key,
+                    help="Altera somente este gráfico e sua regressão, sem mudar o cenário ou recalcular o modelo. Limpar remove todos.")
+                cycle_plot = cycle_points.loc[cycle_points["germplasm_name"].isin(included_cycle)]
+                if cycle_plot.empty:
+                    st.info("Inclua pelo menos um genótipo para exibir o gráfico.")
+                else:
+                    cycle_label = f"Produtividade estimada · {cycle_fit['method']}" if cycle_fit else "Produtividade média bruta"
+                    label_points = st.checkbox("Exibir nomes dos genótipos", value=False, key="cycle_show_names")
+                    cycle_fig = px.scatter(cycle_plot, x="days_to_spike", y="Estimativa", color="Categoria",
+                        symbol="Categoria", hover_name="germplasm_name",
+                        hover_data={"gid": True, "n": True, "Ensaios": True,
+                                    "days_to_spike": ":.1f", "Estimativa": ":.1f"},
+                        text="germplasm_name" if label_points else None,
+                        color_discrete_map={"Check": GDM_NAVY, "Comercial": GDM_LIME,
+                                            "Experimental": GDM_CORAL, "Não informada": GDM_GRAY},
+                        labels={"days_to_spike": "Dias ao espigamento · aba auxiliar", "Estimativa": cycle_label,
+                                "n": "Parcelas", "Ensaios": "Ensaios"},
+                        title="Produtividade e ciclo dos genótipos")
+                    cycle_fig.update_traces(marker_size=11, textposition="top center")
+                    regression = reference_regression(cycle_plot)
+                    if regression is not None:
+                        line_x = np.array([regression["xmin"], regression["xmax"]])
+                        cycle_fig.add_trace(go.Scatter(x=line_x,
+                            y=regression["intercept"] + regression["slope"] * line_x,
+                            mode="lines", name="Regressão · checks + comerciais",
+                            line=dict(color=GDM_NAVY, width=2, dash="dash")))
+                    cycle_span = cycle_plot["Estimativa"].max() - cycle_plot["Estimativa"].min()
+                    cycle_padding = max(1., .08 * cycle_span)
+                    cycle_fig.update_layout(height=580)
+                    cycle_fig.update_yaxes(tickformat=",.1f", range=[
+                        cycle_plot["Estimativa"].min() - cycle_padding,
+                        cycle_plot["Estimativa"].max() + cycle_padding])
+                    show_plot(cycle_fig)
+                    if regression is not None:
+                        r2 = format_decimal(regression["r2"], 3) if np.isfinite(regression["r2"]) else "não definido (resposta constante)"
+                        st.caption(f"Regressão conjunta dos checks e comerciais incluídos: "
+                                   f"y = {regression['intercept']:.2f} + ({regression['slope']:.2f}) × dias. "
+                                   f"R² = {r2} · n = {regression['n']} genótipos. "
+                                   "Peso igual por genótipo; a linha fica no intervalo observado das referências.")
+                    else:
+                        st.info("A regressão exige pelo menos dois checks/comerciais incluídos, "
+                                "com dias ao espigamento distintos.")
+                    st.caption("Estimados: média ajustada/predita geral do genótipo, não apenas o desvio BLUP. "
+                               "Brutos: média das produtividades por ensaio, com peso igual aos ensaios observados. "
+                               "O ciclo vem exclusivamente de days_to_spike da aba auxiliar, não de cycle.")
+                    st.download_button("Baixar dados do gráfico de ciclo", cycle_plot.to_csv(index=False),
+                                       "produtividade_por_ciclo.csv", "text/csv")

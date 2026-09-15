@@ -66,13 +66,35 @@ if "test_saved" in st.session_state:
         self.assertEqual(len(app.exception), 0)
         self.assertEqual(app.session_state["analysis"]["method"], "BLUE")
         self.assertEqual(len(app.error), 0)
-        self.assertEqual(len(app.get("plotly_chart")), 6)
+        self.assertEqual(len(app.get("plotly_chart")), 10)
+        self.assertEqual(len(app.latex), 1)
+        self.assertIn("n", app.session_state["analysis"]["genotypes"])
+        next(r for r in app.radio if r.label == "Valores do gráfico de ciclo").set_value("Dados brutos").run()
+        multiselect(app, "Genótipos no gráfico de ciclo").set_value([]).run()
+        self.assertEqual(len(app.exception), 0)
         multiselect(app, "Ano").set_value(["23"]).run()
         self.assertNotIn("analysis", app.session_state)
         self.assertTrue(app.session_state["analysis_invalidated"])
         next(r for r in app.radio if r.label == "Valores do índice ambiental").set_value("Dados brutos").run()
         self.assertEqual(len(app.exception), 0)
-        self.assertEqual(len(app.get("plotly_chart")), 3)
+        self.assertEqual(len(app.get("plotly_chart")), 4)
+
+    def test_simplified_filters_and_cycle_controls(self):
+        app = AppTest.from_file("app.py", default_timeout=45).run()
+        labels = [w.label for w in app.multiselect]
+        for removed in ["Região comercial", "Nome de produção", "Nome comercial", "Tipo de elemento",
+                        "Dias ao espigamento", "Dias à maturidade", "País", "Estado", "Local"]:
+            self.assertNotIn(removed, labels)
+        self.assertIn("Ensaio | Local", labels)
+        base = next(table.value for table in app.dataframe if "trial_unit_label" in table.value.columns)
+        self.assertEqual(base.columns[0], "trial_unit_label")
+        next(r for r in app.radio if r.label == "Valores do gráfico de ciclo").set_value("Dados brutos").run()
+        self.assertEqual(len(app.exception), 0)
+        self.assertGreater(len(multiselect(app, "Genótipos no gráfico de ciclo").value), 0)
+        multiselect(app, "Genótipos no gráfico de ciclo").set_value([]).run()
+        self.assertEqual(len(app.exception), 0)
+        next(b for b in app.button if b.label == "Incluir todos no gráfico de ciclo").click().run()
+        self.assertGreater(len(multiselect(app, "Genótipos no gráfico de ciclo").value), 0)
 
 
 if __name__ == "__main__":

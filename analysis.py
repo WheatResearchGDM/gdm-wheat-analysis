@@ -135,6 +135,8 @@ diagnostic arrays. Does not present predictions for unobserved genotype/trial pa
                                   + effects.get(GXE, {}).get((genotype, trial), 0.0)})
     genotypes = pd.DataFrame(geno_rows).sort_values("Estimativa", ascending=False).reset_index(drop=True)
     genotypes.insert(0, "Ranking", np.arange(1, len(genotypes) + 1))
+    counts = dm.groupby(GENOTYPE).agg(n=(response, "count"), Ensaios=(TRIAL, "nunique"))
+    genotypes = genotypes.merge(counts, left_on=GENOTYPE, right_index=True, validate="one_to_one")
     if method == "BLUE":
         genotypes = genotypes.drop(columns="Efeito genotípico")
     cells = pd.DataFrame(cell_rows).merge(
