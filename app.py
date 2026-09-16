@@ -14,7 +14,10 @@ import pandas as pd
 import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
-from analysis import data_fingerprint, fit_trial_model, environmental_data, diagnostic_data, refit_without_outliers
+from analysis import (
+    BLOCK, NESTED_BLOCK, YEAR, data_fingerprint, diagnostic_data,
+    environmental_data, fit_trial_model, refit_without_outliers,
+)
 from reporting import head_to_head_wins, cycle_data, reference_regression, model_equation
 from trial_units import add_trial_unit_columns, SOURCE_ROW
 from scipy import stats
@@ -1052,9 +1055,30 @@ def column_display_name(column: str) -> str:
     """Return a readable label for internal analysis columns."""
     if column == TRIAL_LABEL_COLUMN:
         return TRIAL_DISPLAY_LABEL
+    if column == YEAR:
+        return "Ano (categórico)"
+    if column in {BLOCK, NESTED_BLOCK}:
+        return "Bloco dentro de ensaio"
     if column == "germplasm_name":
         return "Genótipo"
     return column
+
+
+def recommended_model_spec(data: pd.DataFrame):
+    """Return the adaptive multi-environment selection model specification."""
+    fixed = [YEAR] if YEAR in data and data[YEAR].dropna().nunique() > 1 else []
+    random = [TRIAL_LABEL_COLUMN]
+    has_nested_blocks = False
+    if BLOCK in data:
+        valid_blocks = data[[TRIAL_LABEL_COLUMN, BLOCK]].dropna()
+        has_nested_blocks = (
+            not valid_blocks.empty
+            and valid_blocks.groupby(TRIAL_LABEL_COLUMN, observed=True)[BLOCK]
+            .nunique().gt(1).any()
+        )
+        if has_nested_blocks:
+            random.append(BLOCK)
+    return fixed, random, has_nested_blocks
 
 
 def render_metric(container, icon: str, label: str, value, detail: str):
@@ -1728,28 +1752,63 @@ with model_page:
                    if c not in MODEL_HIDDEN_COLUMNS and c not in {"gid", "trial_number"}]
         response = st.selectbox("Variável resposta", numeric,
                                 index=numeric.index("yield") if "yield" in numeric else 0)
-        genotype_mode = st.radio(
-            "Efeito de genótipo", ["Fixo → BLUE", "Aleatório → BLUP"],
-            index=1, horizontal=True,
+        model_structure = st.radio(
+            "Estrutura do modelo",
+            ["Seleção multiambiente (recomendada)", "Personalizado"],
+            horizontal=True,
         )
-        method = "BLUE" if genotype_mode.startswith("Fixo") else "BLUP"
-        selectable = [c for c in CATEGORICAL_COLS if c in df and c != "germplasm_name"
+        model_factor_columns = list(dict.fromkeys(CATEGORICAL_COLS + [YEAR, BLOCK]))
+        selectable = [c for c in model_factor_columns if c in df and c != "germplasm_name"
                       and c != "gid" and df[c].nunique() > 1]
-        numeric_effects = [c for c in numeric if c != response and df[c].nunique() > 1]
-        fixed_column, random_column = st.columns(2)
-        with fixed_column:
-            fixed = st.multiselect(
-                "Demais efeitos fixos", list(dict.fromkeys(selectable + numeric_effects)),
-                default=[TRIAL_LABEL_COLUMN] if TRIAL_LABEL_COLUMN in selectable else [],
-                format_func=column_display_name,
+        numeric_effects = [c for c in numeric if c != response and c not in model_factor_columns
+                           and df[c].nunique() > 1]
+        if model_structure.startswith("Seleção multiambiente"):
+            genotype_mode = st.radio(
+                "Efeito de genótipo", ["Fixo → BLUE", "Aleatório → BLUP"],
+                index=1, horizontal=True, disabled=True, key="recommended_genotype_mode",
             )
-        with random_column:
-            random_eff = st.multiselect(
-                "Demais efeitos aleatórios", [c for c in selectable if c not in fixed],
-                format_func=column_display_name,
-                help="Fatores cruzados. Para repetição/bloco, crie uma coluna com ensaio | repetição.",
+            method = "BLUP"
+            fixed, random_eff, has_nested_blocks = recommended_model_spec(df)
+            include_gxe = st.checkbox(
+                "Incluir interação genótipo × ensaio (aleatória)", value=True,
+                disabled=True, key="recommended_gxe",
             )
-        include_gxe = st.checkbox("Incluir interação genótipo × ensaio (aleatória)", value=True)
+            st.info(
+                "Estrutura aplicada: genótipo aleatório; ano fixo categórico; ensaio aleatório; "
+                + ("bloco aninhado no ensaio; " if has_nested_blocks else "")
+                + "interação genótipo × ensaio aleatória."
+            )
+            if not fixed:
+                st.warning("O datacut possui menos de dois anos; o efeito fixo de ano foi omitido.")
+            if not has_nested_blocks:
+                st.warning(
+                    "num_repetitions não está disponível ou não identifica mais de um bloco por ensaio; "
+                    "o componente de bloco foi omitido."
+                )
+        else:
+            genotype_mode = st.radio(
+                "Efeito de genótipo", ["Fixo → BLUE", "Aleatório → BLUP"],
+                index=1, horizontal=True,
+            )
+            method = "BLUE" if genotype_mode.startswith("Fixo") else "BLUP"
+            fixed_column, random_column = st.columns(2)
+            with fixed_column:
+                fixed = st.multiselect(
+                    "Demais efeitos fixos",
+                    list(dict.fromkeys([c for c in selectable if c != BLOCK] + numeric_effects)),
+                    default=[TRIAL_LABEL_COLUMN] if TRIAL_LABEL_COLUMN in selectable else [],
+                    format_func=column_display_name,
+                )
+            with random_column:
+                random_eff = st.multiselect(
+                    "Demais efeitos aleatórios", [c for c in selectable if c not in fixed],
+                    format_func=column_display_name,
+                    help=(
+                        "num_repetitions é tratado automaticamente como bloco aninhado no ensaio. "
+                        "Os demais fatores aleatórios são cruzados."
+                    ),
+                )
+            include_gxe = st.checkbox("Incluir interação genótipo × ensaio (aleatória)", value=True)
         with st.container(border=True):
             section_label("Equação ilustrativa do modelo selecionado")
             st.latex(model_equation(method, fixed, random_eff, include_gxe))

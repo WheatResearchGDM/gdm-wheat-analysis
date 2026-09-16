@@ -66,6 +66,7 @@ if "test_saved" in st.session_state:
 
     def test_blue_ui_and_stale_predictions(self):
         app = AppTest.from_file("app.py", default_timeout=60).run()
+        next(r for r in app.radio if r.label == "Estrutura do modelo").set_value("Personalizado").run()
         next(r for r in app.radio if r.label == "Efeito de genótipo").set_value("Fixo → BLUE").run()
         app.checkbox[0].uncheck().run()
         next(b for b in app.button if b.label == "Calcular BLUE").click().run()
@@ -97,6 +98,8 @@ if "test_saved" in st.session_state:
         self.assertNotIn("Condição", labels)
         genotype_mode = next(r for r in app.radio if r.label == "Selecionar genótipos por:")
         self.assertEqual(genotype_mode.value, "Categoria")
+        model_structure = next(r for r in app.radio if r.label == "Estrutura do modelo")
+        self.assertEqual(model_structure.value, "Seleção multiambiente (recomendada)")
         for group_label in ["Selecionar comerciais", "Selecionar checks", "Selecionar experimentais"]:
             self.assertIn(group_label, labels)
         genotype_mode.set_value("Ciclo").run()
@@ -117,6 +120,7 @@ if "test_saved" in st.session_state:
 
     def test_refit_and_restore_keep_datacut_intact(self):
         app = AppTest.from_file("app.py", default_timeout=90).run()
+        next(r for r in app.radio if r.label == "Estrutura do modelo").set_value("Personalizado").run()
         next(r for r in app.radio if r.label == "Efeito de genótipo").set_value("Fixo → BLUE").run()
         next(c for c in app.checkbox if "interação" in c.label).uncheck().run()
         next(b for b in app.button if b.label == "Calcular BLUE").click().run()

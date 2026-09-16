@@ -4,7 +4,10 @@ import unittest
 import numpy as np
 import pandas as pd
 
-from analysis import GENOTYPE, TRIAL, data_fingerprint, environmental_data, fit_trial_model
+from analysis import (
+    BLOCK, GENOTYPE, NESTED_BLOCK, TRIAL, data_fingerprint,
+    environmental_data, fit_trial_model,
+)
 
 
 def trial_data(unbalanced=False):
@@ -16,6 +19,7 @@ def trial_data(unbalanced=False):
             n = 8 if not unbalanced or (g + e) % 2 == 0 else 2
             for rep in range(n):
                 rows.append({GENOTYPE: f"G{g}", TRIAL: f"VCU | Local {e}",
+                             "year": 2025 + (e >= 2), BLOCK: rep + 1,
                              "yield": 3000 + 200 * g + 250 * e + ge + rng.normal(0, 250),
                              "rep": str(rep)})
     return pd.DataFrame(rows)
@@ -80,6 +84,27 @@ class ModelTests(unittest.TestCase):
         changed = data.iloc[:-1]
         with self.assertRaisesRegex(ValueError, "Reajuste"):
             environmental_data(changed, fit)
+
+    def test_year_is_categorical_and_blocks_are_nested_in_trials(self):
+        data = trial_data()
+        fit = fit_trial_model(
+            data, method="BLUP", fixed=["year"],
+            random=[TRIAL, BLOCK], interaction=False,
+        )
+        coefficient_names = fit["fixed_coefficients"]["Efeito"].tolist()
+        self.assertTrue(any("C(Q('year'))" in name for name in coefficient_names))
+        self.assertIn(NESTED_BLOCK, fit["variance"]["Componente"].tolist())
+        self.assertEqual(fit["random_level_counts"][NESTED_BLOCK], 5 * 8)
+        self.assertIn(BLOCK, fit["random"])
+        self.assertNotIn(NESTED_BLOCK, fit["random"])
+
+    def test_block_requires_repetitions_within_trial(self):
+        data = trial_data().assign(num_repetitions=1)
+        with self.assertRaisesRegex(ValueError, "mais de um bloco"):
+            fit_trial_model(
+                data, method="BLUP", fixed=["year"],
+                random=[TRIAL, BLOCK], interaction=False,
+            )
 
     def test_invalid_fixed_effects_and_missing_values(self):
         data = trial_data()

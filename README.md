@@ -42,12 +42,29 @@ A navegação principal permanece no topo durante a rolagem, na ordem: **Cenári
 
 ## BLUE, BLUP e índice ambiental
 
-Em **Modelo · BLUE / BLUP**, escolha a variável resposta e o efeito do genótipo:
+Em **Modelo · BLUE / BLUP**, a estrutura **Seleção multiambiente (recomendada)** aplica:
+
+- genótipo aleatório para obter BLUP;
+- `year` como efeito fixo **categórico**, estimando diferenças entre anos sem impor tendência linear;
+- unidade `Ano | Ensaio | Local / Ambiente DEV` como efeito aleatório;
+- `num_repetitions` como bloco aleatório aninhado na unidade de ensaio;
+- interação genótipo × ensaio aleatória.
+
+O ano é incluído somente quando o datacut contém pelo menos dois anos. O bloco é incluído somente
+quando `num_repetitions` identifica mais de uma repetição dentro de pelo menos um ensaio. Valores
+iguais de bloco em ensaios distintos são níveis diferentes (por exemplo, `Ensaio A | Bloco 1` e
+`Ensaio B | Bloco 1`). Registros sem valor nas variáveis usadas pelo modelo são omitidos e contados.
+
+Em **Personalizado**, escolha a variável resposta e o efeito do genótipo:
 
 - **Fixo → BLUE**: médias ajustadas para os efeitos fixos escolhidos, estimadas por GLS/REML quando há efeitos aleatórios, ou OLS quando todos os efeitos são fixos.
 - **Aleatório → BLUP**: produtividade predita e efeito genotípico aleatório (desvio) apresentados separadamente.
 
-Inclua **Ano | Ensaio | Local / Ambiente DEV** como efeito fixo ou aleatório. Os fatores aleatórios são cruzados; não são aninhados automaticamente no primeiro fator. Para representar blocos/repetições dentro de ensaios, use uma coluna que combine ensaio e repetição. É possível incluir a interação genótipo × ensaio como componente aleatório; ela requer repetições. Sem interação, o modelo é aditivo.
+Inclua **Ano | Ensaio | Local / Ambiente DEV** como efeito fixo ou aleatório. Ao selecionar
+`num_repetitions` como aleatório, o app cria automaticamente o bloco aninhado no ensaio. Os demais
+fatores aleatórios são cruzados. `year`, quando fixo, é sempre tratado como fator categórico. É
+possível incluir a interação genótipo × ensaio como componente aleatório; ela requer repetições.
+Sem interação, o modelo é aditivo.
 
 As estimativas gerais de genótipo dão peso igual aos ensaios, usando a mesma distribuição dos demais efeitos fixos para todos os genótipos. Nas predições por ensaio, os efeitos fixos adicionais são padronizados pela média da matriz de delineamento dentro de cada ensaio. Somam-se os efeitos aleatórios estimados de genótipo, ensaio e interação, quando presentes. Outros efeitos aleatórios, como blocos, são fixados em zero para essa comparação. Só são exportadas predições de combinações genótipo × ensaio observadas no ajuste.
 

@@ -6,6 +6,7 @@ averages for every genotype. Overall means give each trial equal weight.
 """
 
 import hashlib
+import json
 import warnings
 
 import numpy as np
@@ -18,7 +19,11 @@ from trial_units import SOURCE_ROW, identifier
 
 GENOTYPE = "germplasm_name"
 TRIAL = "trial_unit_label"
+YEAR = "year"
+BLOCK = "num_repetitions"
+NESTED_BLOCK = "Bloco dentro de ensaio"
 GXE = "Genótipo × ensaio"
+FORCED_CATEGORICAL = {YEAR}
 
 
 def data_fingerprint(data):
@@ -41,7 +46,10 @@ diagnostic arrays. Does not present predictions for unobserved genotype/trial pa
     random = list(dict.fromkeys(random or []))
     fixed = [c for c in fixed if c != GENOTYPE]
     random = [c for c in random if c != GENOTYPE]
+    if BLOCK in fixed:
+        raise ValueError("Use num_repetitions como efeito aleatório; o app o aninha automaticamente no ensaio.")
     (fixed if method == "BLUE" else random).append(GENOTYPE)
+    requested_random = random.copy()
     if set(fixed) & set(random):
         raise ValueError("Um efeito não pode ser fixo e aleatório simultaneamente.")
     if TRIAL not in fixed + random:
@@ -66,9 +74,18 @@ diagnostic arrays. Does not present predictions for unobserved genotype/trial pa
     dm = dm.reset_index(drop=True)
     if len(dm) < 20 or dm[GENOTYPE].nunique() < 2 or dm[TRIAL].nunique() < 2:
         raise ValueError("O ajuste exige ao menos 20 parcelas, 2 genótipos e 2 ensaios válidos.")
+    if BLOCK in random:
+        block_counts = dm.groupby(TRIAL, observed=True)[BLOCK].nunique()
+        if not block_counts.gt(1).any():
+            raise ValueError("num_repetitions não identifica mais de um bloco dentro de nenhum ensaio.")
+        dm[NESTED_BLOCK] = [
+            json.dumps([trial, block], ensure_ascii=False)
+            for trial, block in zip(dm[TRIAL].map(identifier), dm[BLOCK].map(identifier))
+        ]
+        random = [NESTED_BLOCK if c == BLOCK else c for c in random]
     categorical = {c for c in fixed + random if (
         c in [GENOTYPE, TRIAL] or not pd.api.types.is_numeric_dtype(dm[c])
-        or pd.api.types.is_bool_dtype(dm[c]))}
+        or pd.api.types.is_bool_dtype(dm[c]) or c in FORCED_CATEGORICAL)}
     categorical.update(random)
     for c in categorical:
         dm[c] = dm[c].astype(str)
@@ -178,15 +195,16 @@ diagnostic arrays. Does not present predictions for unobserved genotype/trial pa
     diagnostics["residual"] = residuals
     sigma = np.sqrt(float(result.scale)) if np.isfinite(result.scale) and result.scale > 0 else np.nan
     diagnostics["scaled_residual"] = residuals / sigma
-    fit_id = hashlib.sha256(repr((data_fingerprint(data), response, method, fixed, random,
+    fit_id = hashlib.sha256(repr((data_fingerprint(data), response, method, fixed, requested_random,
                                  interaction, excluded_rows)).encode()).hexdigest()[:16]
     return {"result": result, "genotypes": genotypes, "cells": cells,
             "variance": pd.DataFrame({"Componente": list(variance), "Variância": list(variance.values())}),
+            "random_level_counts": {name: len(values) for name, values in levels.items()},
             "fixed_coefficients": pd.DataFrame({"Efeito": X.columns, "Estimativa": beta,
                 "EP": np.asarray(result.bse_fe if names else result.bse)}),
             "fitted": fitted, "residuals": residuals, "diagnostics": diagnostics,
             "excluded_rows": excluded_rows, "exclusion_audit": pd.DataFrame(), "fit_id": fit_id,
-            "response": response, "method": method, "fixed": fixed, "random": random,
+            "response": response, "method": method, "fixed": fixed, "random": requested_random,
             "interaction": interaction, "nobs": len(dm), "omitted": len(eligible) - len(dm),
             "warnings": list(dict.fromkeys(str(w.message) for w in caught)),
             "signature": data_fingerprint(data)}
