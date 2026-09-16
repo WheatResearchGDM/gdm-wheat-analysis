@@ -21,12 +21,12 @@ def identifier(value):
 
 
 def add_trial_unit_columns(data):
-    """PROD-PLACEMENT uses trial/environment DEV; other areas use trial/location.
+    """Prefix trial units with year and use DEV environment or location by area.
 
     A PROD-PLACEMENT trial_id may legitimately span multiple DEV environments.
     Human labels are unique for the technical keys, even in a mixed-area import.
     """
-    required = {"trial_id", "trial_name"}
+    required = {"trial_id", "trial_name", "year"}
     missing = required - set(data.columns)
     if missing:
         raise ValueError("Colunas necessárias para identificar os ensaios ausentes: " + ", ".join(sorted(missing)))
@@ -40,6 +40,9 @@ def add_trial_unit_columns(data):
     if ids.isna().any():
         raise ValueError(f"A coluna trial_id contém {int(ids.isna().sum())} registro(s) sem identificação.")
     names = enriched["trial_name"].map(identifier)
+    years = enriched["year"].map(identifier)
+    if years.isna().any():
+        raise ValueError(f"A coluna year contém {int(years.isna().sum())} registro(s) sem identificação.")
     location = enriched.get("location_name", pd.Series(None, index=enriched.index, dtype=object)).map(identifier)
     environment = enriched.get("environment_dev_file", pd.Series(None, index=enriched.index, dtype=object)).map(identifier)
     if (prod & (environment.isna() | names.isna())).any():
@@ -48,8 +51,11 @@ def add_trial_unit_columns(data):
                          "Preencha a identificação; location_name não será usado como substituto.")
     second = location.where(~prod, environment)
     basis = pd.Series(np.where(prod, "DEV", "Local"), index=enriched.index)
-    enriched[TRIAL_KEY] = [json.dumps([b, n, s], ensure_ascii=False) for b, n, s in zip(basis, names, second)]
-    labels = names.fillna("(Nulo)") + " | " + second.fillna("(Nulo)")
+    enriched[TRIAL_KEY] = [
+        json.dumps([b, y, n, s], ensure_ascii=False)
+        for b, y, n, s in zip(basis, years, names, second)
+    ]
+    labels = years + " | " + names.fillna("(Nulo)") + " | " + second.fillna("(Nulo)")
     units = pd.DataFrame({"key": enriched[TRIAL_KEY], "label": labels, "basis": basis}).drop_duplicates("key")
     collision = units["label"].duplicated(keep=False)
     units.loc[collision, "label"] += " [" + units.loc[collision, "basis"] + "]"
@@ -61,7 +67,7 @@ def add_trial_unit_columns(data):
     conflicts = regular.groupby("_normalized_trial_id")[TRIAL_KEY].nunique()
     conflicts = conflicts.loc[conflicts > 1]
     if not conflicts.empty:
-        raise ValueError("O mesmo trial_id está associado a mais de uma combinação trial_name | location_name "
+        raise ValueError("O mesmo trial_id está associado a mais de uma combinação year | trial_name | location_name "
                          "fora de PROD-PLACEMENT. Revise: " + ", ".join(conflicts.index[:5]))
     if SOURCE_ROW not in enriched:
         enriched[SOURCE_ROW] = np.arange(2, len(enriched) + 2)

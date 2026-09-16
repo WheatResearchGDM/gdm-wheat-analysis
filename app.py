@@ -44,14 +44,15 @@ GDM_SCALE = [
 APP_DIR = Path(__file__).resolve().parent
 TEMPLATE_PATH = APP_DIR / "template_dados_fenotipicos.xlsx"
 REQUIRED_UPLOAD_COLUMNS = {
-    "trial_id", "trial_name", "germplasm_name", "yield"
+    "year", "trial_id", "trial_name", "germplasm_name", "yield"
 }
 MATERIAL_GID_COLUMN = "gid"
 NULL_FILTER_VALUE = "(Nulo)"
 TRIAL_KEY_COLUMN = "_trial_unit_key"
 TRIAL_LABEL_COLUMN = "trial_unit_label"
-TRIAL_DISPLAY_LABEL = "Ensaio | Local / Ambiente DEV"
-TRIAL_DEFINITION = "PROD-PLACEMENT: trial_name | environment_dev_file. Demais áreas: trial_name | location_name."
+TRIAL_DISPLAY_LABEL = "Ano | Ensaio | Local / Ambiente DEV"
+TRIAL_DEFINITION = "PROD-PLACEMENT: year | trial_name | environment_dev_file. Demais áreas: year | trial_name | location_name."
+TRIAL_UNIT_RULE = "area-year-dependent-v2"
 MODEL_HIDDEN_COLUMNS = {"trial_id", "trial_name", TRIAL_KEY_COLUMN, SOURCE_ROW, "plot_id", "plot_number", "plot_id_in_source"}
 DEFAULT_FILTER_VALUES = {
     "plot_is_discarded": ["False"],
@@ -63,7 +64,9 @@ MATERIAL_FILTER_LABELS = {
     "brand": "Marca",
     "cycle": "Ciclo",
 }
-REMOVED_OBSERVATION_FILTERS = {"country_name", "state_name", "location_name", "signed_status"}
+REMOVED_OBSERVATION_FILTERS = {
+    "country_name", "state_name", "location_name", "signed_status", "condition_file",
+}
 
 OBSERVATION_FILTERS = [
     ("year", "Ano"),
@@ -632,6 +635,7 @@ def generate_sample_data(n_plots=6000, seed=42):
     signed_opts = ["OK", "NOT-OK", "NOT-SIGNED"]
     pipelines = ["Pipeline A", "Pipeline B", "Pipeline C"]
     conditions = ["Irrigado", "Sequeiro"]
+    cycles = ["Precoce", "Médio", "Tardio"]
     # Build rows
     rows = []
     trial_counter = 0
@@ -644,6 +648,7 @@ def generate_sample_data(n_plots=6000, seed=42):
                 subset = list(rng.choice(all_germ, size=rng.integers(15, 30), replace=False))
                 cond = rng.choice(conditions)
                 pipe = rng.choice(pipelines)
+                cycle = cycles[(trial_counter - 1) % len(cycles)]
                 comp = rng.choice(companies)
                 signed = rng.choice(signed_opts, p=[0.6, 0.15, 0.25])
                 # Genotype effects
@@ -658,13 +663,14 @@ def generate_sample_data(n_plots=6000, seed=42):
                             "year": yr,
                             "trial_id": f"TRIAL-{trial_counter:04d}",
                             "plot_id": f"PLOT-{len(rows) + 1:06d}",
-                            TRIAL_KEY_COLUMN: f"{trial_name} | {loc_name}",
-                            TRIAL_LABEL_COLUMN: f"{trial_name} | {loc_name}",
+                            TRIAL_KEY_COLUMN: f"{yr} | {trial_name} | {loc_name}",
+                            TRIAL_LABEL_COLUMN: f"{yr} | {trial_name} | {loc_name}",
                             "trial_name": trial_name,
                             "trial_type": tt,
                             "trial_number": trial_counter,
                             "pipeline_file": pipe,
                             "condition_file": cond,
+                            "cycle_file": cycle,
                             "signed_status": signed,
                             "plot_is_discarded": bool(
                                 rng.choice([False, True], p=[0.97, 0.03])
@@ -720,7 +726,7 @@ SAMPLE_MATERIALS = (
 
 CATEGORICAL_COLS = [
     "data_source", "trial_type", TRIAL_LABEL_COLUMN, "pipeline_file",
-    "condition_file", "signed_status", "location_name",
+    "condition_file", "cycle_file", "signed_status", "location_name",
     "state_name", "country_name", "macroregion_name", "microregion_name",
     "germplasm_name", "gid", "company_name", "area",
     "plot_is_discarded", "missing_dev_file",
@@ -896,14 +902,14 @@ def scenario_payload(source_id, material_columns, observation_columns):
     """Save the live selection, including every datacut and quality filter."""
     datacut_columns = {
         "year", "trial_type", "country_name", "macroregion_name", "microregion_name",
-        "state_name", "location_name", TRIAL_LABEL_COLUMN, "condition_file",
+        "state_name", "location_name", TRIAL_LABEL_COLUMN, "pipeline_file", "cycle_file",
     }
     observation_filters = {
         c: st.session_state.get(filter_state_key(c, source_id), [])
         for c in observation_columns
     }
     return {
-        "app": "gdm-wheat-analysis", "version": 3, "trial_unit_rule": "area-dependent-v1",
+        "app": "gdm-wheat-analysis", "version": 4, "trial_unit_rule": TRIAL_UNIT_RULE,
         "name": st.session_state.get(f"scenario_name_{source_id}") or "Cenário GDM",
         "saved_at_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "source_fingerprint": source_id,
@@ -924,7 +930,7 @@ def load_scenario_into_state(payload, source_id, active_data=None):
     """Restore scenarios before widgets, replacing previous selections."""
     if not isinstance(payload, dict) or payload.get("app") != "gdm-wheat-analysis":
         raise ValueError("Este JSON não é um cenário do GDM Wheat Analysis.")
-    if payload.get("version") not in [1, 2, 3]:
+    if payload.get("version") not in [1, 2, 3, 4]:
         raise ValueError("Versão de cenário não suportada.")
     filters = payload.get("filters")
     if not isinstance(filters, dict):
@@ -939,11 +945,9 @@ def load_scenario_into_state(payload, source_id, active_data=None):
     if not isinstance(gids, list):
         raise ValueError("A seleção de genótipos precisa ser uma lista.")
     observations = {**groups["observations"], **groups["datacut"], **groups["additional"]}
-    if (payload.get("trial_unit_rule") != "area-dependent-v1" and observations.get(TRIAL_LABEL_COLUMN)
-            and active_data is not None and "area" in active_data
-            and active_data["area"].astype("string").str.strip().str.upper().eq("PROD-PLACEMENT").any()):
-        raise ValueError("Este cenário usa a regra antiga de ensaios e a base contém PROD-PLACEMENT. "
-                         "Recrie a seleção de ensaios com ambiente DEV e salve um novo cenário; "
+    if payload.get("trial_unit_rule") != TRIAL_UNIT_RULE and observations.get(TRIAL_LABEL_COLUMN):
+        raise ValueError("Este cenário usa a regra antiga de identificação dos ensaios. "
+                         "Recrie a seleção com o prefixo de ano e salve um novo cenário; "
                          "as seleções atuais não foram alteradas.")
     # Clear old values as well as widget values; an omitted filter must not leak.
     for key in list(st.session_state):
@@ -1149,7 +1153,7 @@ with scenario_page:
             ("year", "Ano"), ("trial_type", "Tipo de ensaio"),
             ("macroregion_name", "Macrorregião"),
             ("microregion_name", "Microrregião"), (TRIAL_LABEL_COLUMN, TRIAL_DISPLAY_LABEL),
-            ("condition_file", "Condição"),
+            ("pipeline_file", "Pipeline"), ("cycle_file", "Ciclo"),
         ]
         for index, (column, label) in enumerate(datacut_filters):
             filtered_data, _ = cascading_multiselect(

@@ -39,6 +39,9 @@ if "test_saved" in st.session_state:
         saved = json.loads(json.dumps(app.session_state["test_export"]))
         expected_rows = app.session_state["df"].index.tolist()
         self.assertEqual(saved["filters"]["datacut"]["year"], ["23"])
+        self.assertIn("pipeline_file", saved["filters"]["datacut"])
+        self.assertIn("cycle_file", saved["filters"]["datacut"])
+        self.assertNotIn("condition_file", saved["filters"]["datacut"])
         self.assertEqual(saved["filters"]["additional"]["missing_dev_file"], ["no", "(Nulo)"])
         app.session_state["test_saved"] = saved
         multiselect(app, "Ano").set_value(["24"]).run()
@@ -86,7 +89,10 @@ if "test_saved" in st.session_state:
         for removed in ["Região comercial", "Nome de produção", "Nome comercial", "Tipo de elemento",
                         "Dias ao espigamento", "Dias à maturidade", "País", "Estado", "Local", "Status"]:
             self.assertNotIn(removed, labels)
-        self.assertIn("Ensaio | Local / Ambiente DEV", labels)
+        self.assertIn("Ano | Ensaio | Local / Ambiente DEV", labels)
+        self.assertIn("Pipeline", labels)
+        self.assertIn("Ciclo", labels)
+        self.assertNotIn("Condição", labels)
         self.assertEqual([tab.label for tab in app.tabs[:7]], [
             "◎ Cenários / Datacut", "▦ Visão geral", "◈ Modelo · BLUE / BLUP", "⌁ Diagnósticos",
             "↗ Resultados", "◷ Produtividade × ciclo", "⇄ Índice ambiental"])
@@ -132,13 +138,13 @@ if "test_saved" in st.session_state:
         self.assertNotIn("analysis", app.session_state)
         self.assertNotIn("analysis_before_exclusions", app.session_state)
 
-    def test_old_scenario_with_prod_trial_selection_is_not_silently_expanded(self):
+    def test_old_scenario_trial_selection_is_not_silently_expanded(self):
         source = self.source + '''
 st.session_state["test_legacy_rejected"] = False
 try:
     load_scenario_into_state({"app": "gdm-wheat-analysis", "version": 2,
         "filters": {"datacut": {"trial_unit_label": ["T | L"]}}},
-        source_id, pd.DataFrame({"area": ["PROD-PLACEMENT"]}))
+        source_id, pd.DataFrame({"area": ["Trigo"]}))
 except ValueError:
     st.session_state["test_legacy_rejected"] = True
 '''
