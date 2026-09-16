@@ -26,7 +26,7 @@ e vários IDs com a mesma combinação pertencem ao mesmo ensaio. Fora dessa ár
 a validação de um nome/local por ID continua ativa. Rótulos coincidentes entre as
 duas regras são desambiguados, sem unir ensaios distintos.
 
-Quando houver uma segunda aba, ela será usada como cadastro de materiais e precisa conter `gid`. A coluna `gid` da segunda aba é vinculada à coluna `gid` da primeira. Os filtros de materiais são categoria, marca e ciclo; os genótipos são exibidos pelo `germplasm_name`. Materiais sem observações na primeira aba não aparecem como opções de análise. Sem seleção individual, todos os materiais do recorte são incluídos. Nome de produção/comercial, região comercial, tipo de elemento e dias de espigamento/maturidade permanecem na fonte, mas não são filtros.
+Quando houver uma segunda aba, ela será usada como cadastro de materiais e precisa conter `gid`. A coluna `gid` da segunda aba é vinculada à coluna `gid` da primeira. A seleção de genótipos pode ser organizada por **Categoria** ou **Ciclo**, em listas independentes por grupo; os nomes são exibidos pelo `germplasm_name`, mas o vínculo continua sendo feito pelo GID. Todos os materiais começam selecionados, e Marca permanece disponível como filtro adicional. Materiais sem observações na primeira aba não aparecem como opções de análise. Nome de produção/comercial, região comercial, tipo de elemento e dias de espigamento/maturidade permanecem na fonte, mas não são filtros.
 
 O botão **Baixar template Excel** fornece os 72 cabeçalhos do arquivo de referência, incluindo `environment_dev_file` e identificadores de parcelas. O índice ambiental compara dois genótipos apenas nas unidades de ensaio em que ambos foram avaliados.
 
@@ -38,7 +38,7 @@ A navegação principal permanece no topo durante a rolagem, na ordem: **Cenári
 
 ## Salvar e abrir cenários
 
-**Salvar cenário + datacut (JSON)** baixa o nome, os filtros de materiais, GIDs, datacut e demais filtros/qualidade. O arquivo não contém observações, modelo ou exclusões de outliers. Para restaurar, carregue a planilha e use **Abrir cenário e datacut (JSON)**. A versão 4 registra `trial_unit_rule = area-year-dependent-v2`. Cenários antigos continuam aceitos quando não possuem uma seleção de ensaios; quando possuem, essa seleção precisa ser recriada com o prefixo de ano, sem conversão silenciosa. Status e condição não são reaplicados como segmentações. Abrir um cenário válido substitui as seleções anteriores. Se a base mudou, somente opções presentes são aplicadas.
+**Salvar cenário + datacut (JSON)** baixa o nome, o modo de seleção Categoria/Ciclo, os GIDs selecionados, o datacut e os demais filtros/qualidade. O arquivo não contém observações, modelo ou exclusões de outliers. Para restaurar, carregue a planilha e use **Abrir cenário e datacut (JSON)**. A versão 5 registra `trial_unit_rule = area-year-dependent-v2`. Cenários antigos continuam aceitos quando não possuem uma seleção de ensaios; quando possuem, essa seleção precisa ser recriada com o prefixo de ano, sem conversão silenciosa. Status e condição não são reaplicados como segmentações. Abrir um cenário válido substitui as seleções anteriores. Se a base mudou, somente opções presentes são aplicadas.
 
 ## BLUE, BLUP e índice ambiental
 

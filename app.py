@@ -53,6 +53,7 @@ TRIAL_LABEL_COLUMN = "trial_unit_label"
 TRIAL_DISPLAY_LABEL = "Ano | Ensaio | Local / Ambiente DEV"
 TRIAL_DEFINITION = "PROD-PLACEMENT: year | trial_name | environment_dev_file. Demais áreas: year | trial_name | location_name."
 TRIAL_UNIT_RULE = "area-year-dependent-v2"
+IMPORT_CACHE_VERSION = "material-selection-v1"
 MODEL_HIDDEN_COLUMNS = {"trial_id", "trial_name", TRIAL_KEY_COLUMN, SOURCE_ROW, "plot_id", "plot_number", "plot_id_in_source"}
 DEFAULT_FILTER_VALUES = {
     "plot_is_discarded": ["False"],
@@ -63,6 +64,17 @@ MATERIAL_FILTER_LABELS = {
     "category": "Categoria",
     "brand": "Marca",
     "cycle": "Ciclo",
+}
+GENOTYPE_SELECTION_MODES = {
+    "Categoria": "category",
+    "Ciclo": "cycle",
+}
+CATEGORY_GROUP_LABELS = {
+    "commercial": "Comerciais",
+    "comercial": "Comerciais",
+    "check": "Checks",
+    "testemunha": "Checks",
+    "experimental": "Experimentais",
 }
 REMOVED_OBSERVATION_FILTERS = {
     "country_name", "state_name", "location_name", "signed_status", "condition_file",
@@ -713,10 +725,13 @@ SAMPLE_MATERIALS = (
     )
     .assign(
         business_region="Brasil",
-        category=lambda frame: np.where(
-            frame["commercial_name"].str.startswith("GDM-"),
-            "EXPERIMENTAL",
-            "CHECK",
+        category=lambda frame: np.select(
+            [
+                frame["commercial_name"].str.startswith("GDM-"),
+                frame["commercial_name"].isin(["TBIO Toruk", "TBIO Sonic"]),
+            ],
+            ["EXPERIMENTAL", "CHECK"],
+            default="COMMERCIAL",
         ),
         cycle="Não informado",
         days_to_spike=lambda frame: 55 + np.arange(len(frame)) % 35,
@@ -749,10 +764,12 @@ def normalize_identifier_value(value):
 
 
 @st.cache_data(show_spinner=False)
-def read_uploaded_excel(file_bytes: bytes, trial_unit_rule: str):
+def read_uploaded_excel(file_bytes: bytes, trial_unit_rule: str, cache_version: str):
     """Read observations from sheet 1 and, when present, materials from sheet 2."""
     if trial_unit_rule != TRIAL_UNIT_RULE:
         raise ValueError("Regra de identificação dos ensaios incompatível com esta versão do app.")
+    if cache_version != IMPORT_CACHE_VERSION:
+        raise ValueError("Versão do processamento da planilha incompatível com esta versão do app.")
     workbook = pd.ExcelFile(BytesIO(file_bytes), engine="openpyxl")
     df = pd.read_excel(workbook, sheet_name=0)
     df.columns = [str(column).strip() for column in df.columns]
@@ -900,6 +917,43 @@ def material_display_labels(
     return labels
 
 
+def material_selection_groups(materials: pd.DataFrame, group_column: str):
+    """Group material GIDs for the category/cycle selector without dropping nulls."""
+    if group_column not in materials.columns:
+        return [("Todos os genótipos", materials["gid"].dropna().tolist())]
+
+    grouped = {}
+    for _, row in materials.iterrows():
+        gid = normalize_gid_value(row.get("gid"))
+        if gid is None:
+            continue
+        raw_group = row.get(group_column)
+        if pd.isna(raw_group) or not str(raw_group).strip():
+            label = "Sem categoria" if group_column == "category" else "Sem ciclo"
+        else:
+            value = str(raw_group).strip()
+            label = CATEGORY_GROUP_LABELS.get(value.casefold(), value)
+        grouped.setdefault(label, []).append(gid)
+
+    category_order = {"Comerciais": 0, "Checks": 1, "Experimentais": 2, "Sem categoria": 98}
+    return sorted(
+        grouped.items(),
+        key=lambda item: (category_order.get(item[0], 10), item[0].casefold()),
+    )
+
+
+def genotype_group_widget_label(mode: str, group_label: str) -> str:
+    if mode == "Categoria":
+        known = {
+            "Comerciais": "Selecionar comerciais",
+            "Checks": "Selecionar checks",
+            "Experimentais": "Selecionar experimentais",
+            "Sem categoria": "Selecionar sem categoria",
+        }
+        return known.get(group_label, f"Selecionar {group_label}")
+    return f"Ciclo · {group_label}"
+
+
 def scenario_payload(source_id, material_columns, observation_columns):
     """Save the live selection, including every datacut and quality filter."""
     datacut_columns = {
@@ -911,11 +965,15 @@ def scenario_payload(source_id, material_columns, observation_columns):
         for c in observation_columns
     }
     return {
-        "app": "gdm-wheat-analysis", "version": 4, "trial_unit_rule": TRIAL_UNIT_RULE,
+        "app": "gdm-wheat-analysis", "version": 5, "trial_unit_rule": TRIAL_UNIT_RULE,
         "name": st.session_state.get(f"scenario_name_{source_id}") or "Cenário GDM",
         "saved_at_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "source_fingerprint": source_id,
         "filters": {
+            "material_selection_mode": st.session_state.get(
+                filter_state_key("genotype_selection_mode", source_id, "material"),
+                "Categoria",
+            ),
             "material_attributes": {
                 c: st.session_state.get(filter_state_key(c, source_id, "material"), [])
                 for c in material_columns
@@ -932,7 +990,7 @@ def load_scenario_into_state(payload, source_id, active_data=None):
     """Restore scenarios before widgets, replacing previous selections."""
     if not isinstance(payload, dict) or payload.get("app") != "gdm-wheat-analysis":
         raise ValueError("Este JSON não é um cenário do GDM Wheat Analysis.")
-    if payload.get("version") not in [1, 2, 3, 4]:
+    if payload.get("version") not in [1, 2, 3, 4, 5]:
         raise ValueError("Versão de cenário não suportada.")
     filters = payload.get("filters")
     if not isinstance(filters, dict):
@@ -946,6 +1004,9 @@ def load_scenario_into_state(payload, source_id, active_data=None):
     gids = filters.get("selected_gids", [])
     if not isinstance(gids, list):
         raise ValueError("A seleção de genótipos precisa ser uma lista.")
+    selection_mode = filters.get("material_selection_mode", "Categoria")
+    if selection_mode not in GENOTYPE_SELECTION_MODES:
+        selection_mode = "Categoria"
     observations = {**groups["observations"], **groups["datacut"], **groups["additional"]}
     if payload.get("trial_unit_rule") != TRIAL_UNIT_RULE and observations.get(TRIAL_LABEL_COLUMN):
         raise ValueError("Este cenário usa a regra antiga de identificação dos ensaios. "
@@ -964,6 +1025,11 @@ def load_scenario_into_state(payload, source_id, active_data=None):
     st.session_state[filter_state_key("selected_gids", source_id, "material")] = [
         normalize_gid_value(gid) for gid in gids
     ]
+    st.session_state[filter_state_key(
+        "genotype_selection_mode", source_id, "material",
+    )] = selection_mode
+    if payload.get("version", 1) < 5 and not gids:
+        st.session_state[f"material_legacy_select_all_{source_id}"] = True
     st.session_state[f"scenario_name_{source_id}"] = str(payload.get("name") or "Cenário GDM")
 
 
@@ -1079,7 +1145,7 @@ with scenario_page:
         try:
             uploaded_bytes = uploaded_file.getvalue()
             active_data, invalid_yield_count, uploaded_materials, _ = read_uploaded_excel(
-                uploaded_bytes, TRIAL_UNIT_RULE,
+                uploaded_bytes, TRIAL_UNIT_RULE, IMPORT_CACHE_VERSION,
             )
             source_id = hashlib.sha256(uploaded_bytes).hexdigest()[:12]
             source_badge = uploaded_file.name
@@ -1124,9 +1190,9 @@ with scenario_page:
         else:
             st.session_state.pop("applied_scenario_signature", None)
         st.text_input("Nome do cenário", key=f"scenario_name_{source_id}", placeholder="Ex.: BRA_VCU_2026")
-        material_filter_columns = [c for c in MATERIAL_FILTER_LABELS if c in available_materials]
+        material_filter_columns = [c for c in ["brand"] if c in available_materials]
         material_cut = available_materials.copy()
-        with st.expander("Características dos materiais", expanded=True):
+        with st.expander("Filtro adicional de materiais", expanded=False):
             material_columns = st.columns(3)
             for index, column in enumerate(material_filter_columns):
                 material_cut, _ = cascading_multiselect(
@@ -1134,19 +1200,71 @@ with scenario_page:
                     MATERIAL_FILTER_LABELS[column], source_id, key_prefix="material",
                 )
         material_labels = material_display_labels(available_materials, active_data)
-        gid_options = material_cut["gid"].tolist()
         selected_gid_key = filter_state_key("selected_gids", source_id, "material")
-        st.session_state[selected_gid_key] = [
-            gid for gid in st.session_state.get(selected_gid_key, []) if gid in gid_options
+        had_saved_selection = selected_gid_key in st.session_state
+        saved_gids = set(st.session_state.get(selected_gid_key, []))
+        legacy_select_all_key = f"material_legacy_select_all_{source_id}"
+        select_all_groups = not had_saved_selection or st.session_state.get(legacy_select_all_key, False)
+
+        available_modes = [
+            mode for mode, column in GENOTYPE_SELECTION_MODES.items()
+            if column in material_cut and material_cut[column].notna().any()
         ]
-        selected_gids = st.multiselect(
-            "Genótipos incluídos", gid_options,
-            format_func=lambda gid: material_labels.get(gid, gid), key=selected_gid_key,
-            help="Sem seleção individual: inclui todos os materiais que passaram pelos filtros acima.",
-        )
-        effective_gids = selected_gids or gid_options
+        mode_key = filter_state_key("genotype_selection_mode", source_id, "material")
+        if not available_modes:
+            selection_mode = "Todos"
+            group_column = ""
+        else:
+            if st.session_state.get(mode_key) not in available_modes:
+                st.session_state[mode_key] = available_modes[0]
+            if len(available_modes) > 1:
+                selection_mode = st.radio(
+                    "Selecionar genótipos por:", available_modes,
+                    horizontal=True, key=mode_key,
+                )
+            else:
+                selection_mode = available_modes[0]
+                st.session_state[mode_key] = selection_mode
+                st.caption(f"Selecionar genótipos por: **{selection_mode}**")
+            group_column = GENOTYPE_SELECTION_MODES[selection_mode]
+
+        groups = material_selection_groups(material_cut, group_column)
+        group_columns = st.columns(min(3, max(1, len(groups))))
+        selected_gids = []
+        for index, (group_label, group_gids) in enumerate(groups):
+            options = sorted(
+                set(group_gids),
+                key=lambda gid: material_labels.get(gid, gid).casefold(),
+            )
+            group_hash = hashlib.sha256(
+                f"{group_column}|{group_label}".encode("utf-8")
+            ).hexdigest()[:10]
+            group_key = filter_state_key(
+                f"selected_gids_{group_hash}", source_id, "material",
+            )
+            if group_key in st.session_state:
+                st.session_state[group_key] = [
+                    gid for gid in st.session_state[group_key] if gid in options
+                ]
+            else:
+                st.session_state[group_key] = (
+                    options if select_all_groups else [gid for gid in options if gid in saved_gids]
+                )
+            selected_gids.extend(group_columns[index % len(group_columns)].multiselect(
+                genotype_group_widget_label(selection_mode, group_label),
+                options,
+                format_func=lambda gid: material_labels.get(gid, gid),
+                key=group_key,
+            ))
+
+        effective_gids = list(dict.fromkeys(selected_gids))
+        st.session_state[selected_gid_key] = effective_gids
+        st.session_state.pop(legacy_select_all_key, None)
         filtered_data = active_data.loc[active_data["gid"].isin(effective_gids)].copy()
-        st.caption(f"{len(effective_gids)} genótipo(s) incluído(s).")
+        if effective_gids:
+            st.caption(f"{len(effective_gids)} genótipo(s) incluído(s).")
+        else:
+            st.warning("Nenhum genótipo selecionado. Escolha ao menos um material em um dos grupos.")
 
     with st.container(border=True):
         section_label("2 · Datacut — recorte dos ensaios")

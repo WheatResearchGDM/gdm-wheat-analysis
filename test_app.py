@@ -34,8 +34,10 @@ if "test_saved" in st.session_state:
         multiselect(app, "Microrregião").set_value(["MR1"]).run()
         multiselect(app, "Parcela descartada SEEDS").set_value([]).run()
         multiselect(app, "Parcela descartada DEV").set_value(["no", "(Nulo)"]).run()
-        # Widget options are readable names; stored values are GIDs.
-        multiselect(app, "Genótipos incluídos").set_value(["G1000", "G1001"]).run()
+        # Grouped widgets show readable names while retaining GIDs as values.
+        multiselect(app, "Selecionar comerciais").set_value([]).run()
+        multiselect(app, "Selecionar checks").set_value([]).run()
+        multiselect(app, "Selecionar experimentais").set_value(["G1000", "G1001"]).run()
         saved = json.loads(json.dumps(app.session_state["test_export"]))
         expected_rows = app.session_state["df"].index.tolist()
         self.assertEqual(saved["filters"]["datacut"]["year"], ["23"])
@@ -93,6 +95,12 @@ if "test_saved" in st.session_state:
         self.assertIn("Pipeline", labels)
         self.assertIn("Ciclo", labels)
         self.assertNotIn("Condição", labels)
+        genotype_mode = next(r for r in app.radio if r.label == "Selecionar genótipos por:")
+        self.assertEqual(genotype_mode.value, "Categoria")
+        for group_label in ["Selecionar comerciais", "Selecionar checks", "Selecionar experimentais"]:
+            self.assertIn(group_label, labels)
+        genotype_mode.set_value("Ciclo").run()
+        self.assertIn("Ciclo · Não informado", [w.label for w in app.multiselect])
         self.assertEqual([tab.label for tab in app.tabs[:7]], [
             "◎ Cenários / Datacut", "▦ Visão geral", "◈ Modelo · BLUE / BLUP", "⌁ Diagnósticos",
             "↗ Resultados", "◷ Produtividade × ciclo", "⇄ Índice ambiental"])
