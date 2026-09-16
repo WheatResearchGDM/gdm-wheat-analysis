@@ -18,7 +18,10 @@ from analysis import (
     BLOCK, NESTED_BLOCK, YEAR, data_fingerprint, diagnostic_data,
     environmental_data, fit_trial_model, refit_without_outliers,
 )
-from reporting import head_to_head_wins, cycle_data, reference_regression, model_equation
+from reporting import (
+    cycle_data, genotype_count, head_to_head_wins, model_equation,
+    reference_regression,
+)
 from trial_units import add_trial_unit_columns, SOURCE_ROW
 from scipy import stats
 
@@ -1346,7 +1349,7 @@ with scenario_page:
     st.success(
         f"Datacut ativo: {format_integer(len(filtered_data))} parcelas · "
         f"{filtered_data[TRIAL_KEY_COLUMN].nunique()} ensaios · "
-        f"{filtered_data['germplasm_name'].nunique()} genótipos"
+        f"{genotype_count(filtered_data)} genótipos"
     )
 
 current_signature = data_fingerprint(filtered_data)
@@ -1380,7 +1383,7 @@ with overview_page:
         c4,
         "♧",
         "Genótipos",
-        df["germplasm_name"].nunique() if "germplasm_name" in df.columns else "-",
+        genotype_count(df),
         "materiais avaliados",
     )
 

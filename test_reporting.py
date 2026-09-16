@@ -4,11 +4,22 @@ import numpy as np
 import pandas as pd
 
 from analysis import GENOTYPE, TRIAL, fit_trial_model
-from reporting import cycle_data, head_to_head_wins, model_equation, reference_regression
+from reporting import (
+    cycle_data, genotype_count, head_to_head_wins, model_equation,
+    reference_regression,
+)
 from test_analysis import trial_data
 
 
 class ReportingTests(unittest.TestCase):
+    def test_genotype_count_uses_gid_instead_of_collapsing_equal_names(self):
+        data = pd.DataFrame({
+            "gid": [101, 101, 202, 202],
+            GENOTYPE: ["Mesmo nome", "Mesmo nome", "Mesmo nome", "Mesmo nome"],
+        })
+        self.assertEqual(genotype_count(data), 2)
+        self.assertEqual(genotype_count(data.drop(columns="gid")), 1)
+
     def test_wins_ties_and_unpaired_trials(self):
         values = pd.DataFrame({TRIAL: ["e1", "e1", "e2", "e2", "e3", "e3", "e4"],
             GENOTYPE: ["A", "B", "A", "B", "A", "B", "A"],

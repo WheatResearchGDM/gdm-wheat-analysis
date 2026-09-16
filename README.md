@@ -33,6 +33,8 @@ O botão **Baixar template Excel** fornece os 72 cabeçalhos do arquivo de refer
 Todos os controles ficam em **Cenários / Datacut**, em três blocos: cenário/materiais, datacut dos ensaios, e demais variáveis/qualidade. Os filtros são aplicados imediatamente e funcionam em cascata. O datacut inclui `pipeline_file` como **Pipeline** e `cycle_file` como **Ciclo**; `condition_file` não aparece mais como segmentação. Valores ausentes aparecem como **(Nulo)**. Quando disponíveis, **Parcela descartada SEEDS** começa com `plot_is_discarded = False` e **Parcela descartada DEV** com `missing_dev_file = no` **ou nulo**. O filtro Status foi removido, inclusive de Outras variáveis. Limpar um filtro inclui todas as suas opções. As abas preservam as seleções ao navegar. Defaults valem para novas seleções; um cenário carregado mantém os valores explicitamente salvos.
 
 Na visão geral, o gráfico de médias por ensaio ocupa a largura da página, abaixo da distribuição de produtividade, com rolagem vertical para ler todas as barras.
+Os indicadores de quantidade de genótipos usam `gid` como identidade, assim como a seleção de materiais;
+nomes textuais repetidos não reduzem artificialmente essa contagem.
 
 A navegação principal permanece no topo durante a rolagem, na ordem: **Cenários / Datacut → Visão geral → Modelo → Diagnósticos → Resultados → Produtividade × ciclo → Índice ambiental**. País, estado e local não aparecem como filtros separados; use **Ano | Ensaio | Local / Ambiente DEV**, que também é a primeira coluna da Base filtrada.
 

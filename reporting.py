@@ -6,6 +6,19 @@ import pandas as pd
 from scipy.stats import linregress
 
 from analysis import GENOTYPE, TRIAL, data_fingerprint, environmental_data
+from trial_units import identifier
+
+
+def genotype_count(data):
+    """Count genotype identities by GID, falling back to the displayed name."""
+    if "gid" in data:
+        gids = data["gid"].map(identifier).dropna()
+        if not gids.empty:
+            return int(gids.nunique())
+    if GENOTYPE in data:
+        names = data[GENOTYPE].map(identifier).dropna()
+        return int(names.nunique())
+    return 0
 
 
 def head_to_head_wins(values, genotype_a, genotype_b):
