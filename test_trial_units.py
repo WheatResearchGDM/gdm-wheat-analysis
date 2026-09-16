@@ -78,6 +78,20 @@ class TrialUnitTests(unittest.TestCase):
         self.assertEqual(result[TRIAL_KEY].nunique(), 2)
         self.assertEqual(result[TRIAL_LABEL].tolist(), ["2025 | T | L", "2026 | T | L"])
 
+    def test_expected_year_trial_location_label(self):
+        data = pd.DataFrame({
+            "area": ["Trigo"],
+            "year": [25],
+            "trial_id": [1],
+            "trial_name": ["CERRADO_ARAXA-EP2_ECR_DP25"],
+            "location_name": ["ARAXA_2_FA"],
+        })
+        result = add_trial_unit_columns(data)
+        self.assertEqual(
+            result[TRIAL_LABEL].iloc[0],
+            "25 | CERRADO_ARAXA-EP2_ECR_DP25 | ARAXA_2_FA",
+        )
+
     def test_year_is_required_and_cannot_be_empty(self):
         data = pd.DataFrame({"trial_id": [1], "trial_name": ["T"], "location_name": ["L"]})
         with self.assertRaisesRegex(ValueError, "year"):

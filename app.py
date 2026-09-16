@@ -749,8 +749,10 @@ def normalize_identifier_value(value):
 
 
 @st.cache_data(show_spinner=False)
-def read_uploaded_excel(file_bytes: bytes):
+def read_uploaded_excel(file_bytes: bytes, trial_unit_rule: str):
     """Read observations from sheet 1 and, when present, materials from sheet 2."""
+    if trial_unit_rule != TRIAL_UNIT_RULE:
+        raise ValueError("Regra de identificação dos ensaios incompatível com esta versão do app.")
     workbook = pd.ExcelFile(BytesIO(file_bytes), engine="openpyxl")
     df = pd.read_excel(workbook, sheet_name=0)
     df.columns = [str(column).strip() for column in df.columns]
@@ -1076,7 +1078,9 @@ with scenario_page:
     if uploaded_file is not None:
         try:
             uploaded_bytes = uploaded_file.getvalue()
-            active_data, invalid_yield_count, uploaded_materials, _ = read_uploaded_excel(uploaded_bytes)
+            active_data, invalid_yield_count, uploaded_materials, _ = read_uploaded_excel(
+                uploaded_bytes, TRIAL_UNIT_RULE,
+            )
             source_id = hashlib.sha256(uploaded_bytes).hexdigest()[:12]
             source_badge = uploaded_file.name
             if "gid" not in active_data:
