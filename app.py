@@ -1168,14 +1168,15 @@ st.markdown(
     unsafe_allow_html=True,
 )
 (scenario_page, overview_page, connectivity_page, model_page, diagnostics_page,
- results_page, analyses_page, environmental_page) = st.tabs([
+ results_page, analyses_page) = st.tabs([
     "◎ Cenários / Datacut", "▦ Visão geral", "⌘ Conectividade",
     "◈ Modelo · BLUE / BLUP", "⌁ Diagnósticos", "↗ Resultados",
-    "◉ Análises", "⇄ Índice ambiental",
+    "◉ Análises",
 ])
 with analyses_page:
-    cycle_page, protein_page, selection_page = st.tabs([
-        "◷ Produtividade × ciclo", "◉ Produtividade × proteína", "◆ Seleção",
+    environmental_page, cycle_page, protein_page, selection_page = st.tabs([
+        "⇄ Índice ambiental", "◷ Produtividade × ciclo",
+        "◉ Produtividade × proteína", "◆ Seleção",
     ])
 
 with scenario_page:

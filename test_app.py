@@ -110,11 +110,12 @@ if "test_saved" in st.session_state:
             "◉ Análises",
         ])
         tab_labels = [tab.label for tab in app.tabs]
-        for analysis_tab in [
-            "◷ Produtividade × ciclo", "◉ Produtividade × proteína", "◆ Seleção",
-            "⇄ Índice ambiental",
-        ]:
-            self.assertIn(analysis_tab, tab_labels)
+        analysis_tabs = [
+            "⇄ Índice ambiental", "◷ Produtividade × ciclo",
+            "◉ Produtividade × proteína", "◆ Seleção",
+        ]
+        analysis_positions = [tab_labels.index(label) for label in analysis_tabs]
+        self.assertEqual(analysis_positions, sorted(analysis_positions))
         base = next(table.value for table in app.dataframe if "trial_unit_label" in table.value.columns)
         self.assertEqual(base.columns[0], "trial_unit_label")
         next(r for r in app.radio if r.label == "Valores do gráfico de ciclo").set_value("Dados brutos").run()

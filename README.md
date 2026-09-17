@@ -36,7 +36,7 @@ Na visão geral, o gráfico de médias por ensaio ocupa a largura da página, ab
 Os indicadores de quantidade de genótipos usam `gid` como identidade, assim como a seleção de materiais;
 nomes textuais repetidos não reduzem artificialmente essa contagem.
 
-A navegação principal permanece no topo durante a rolagem, na ordem: **Cenários / Datacut → Visão geral → Conectividade → Modelo → Diagnósticos → Resultados → Análises → Índice ambiental**. Em **Análises** ficam as subabas **Produtividade × ciclo**, **Produtividade × proteína** e **Seleção**. País, estado e local não aparecem como filtros separados; use **Ano | Ensaio | Local / Ambiente DEV**, que também é a primeira coluna da Base filtrada.
+A navegação principal permanece no topo durante a rolagem, na ordem: **Cenários / Datacut → Visão geral → Conectividade → Modelo → Diagnósticos → Resultados → Análises**. Em **Análises** ficam, nesta ordem, as subabas **Índice ambiental**, **Produtividade × ciclo**, **Produtividade × proteína** e **Seleção**. País, estado e local não aparecem como filtros separados; use **Ano | Ensaio | Local / Ambiente DEV**, que também é a primeira coluna da Base filtrada.
 
 ## Conectividade entre ensaios
 
