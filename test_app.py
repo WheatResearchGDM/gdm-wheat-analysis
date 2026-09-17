@@ -132,10 +132,9 @@ if "test_saved" in st.session_state:
         ).run()
         protein_threshold = next(n for n in app.number_input if n.label == "Threshold de proteína")
         self.assertEqual(protein_threshold.value, 14.0)
-        self.assertTrue(next(c for c in app.checkbox if c.label == "Exibir reta de regressão").value)
+        self.assertNotIn("Exibir reta de regressão", [c.label for c in app.checkbox])
         self.assertGreater(len(multiselect(app, "Genótipos no gráfico de proteína").value), 0)
         protein_threshold.set_value(15.0).run()
-        next(c for c in app.checkbox if c.label == "Exibir reta de regressão").uncheck().run()
         self.assertEqual(
             next(n for n in app.number_input if n.label == "Threshold de proteína").value,
             15.0,

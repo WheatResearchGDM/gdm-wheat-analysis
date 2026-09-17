@@ -98,8 +98,8 @@ BLUE/BLUP válida para o datacut. `protein` é sempre bruto: primeiro se calcula
 dentro de cada ensaio e depois a média entre ensaios, dando peso igual a cada ensaio. O gráfico tem
 um ponto por genótipo, produtividade no eixo X e proteína no eixo Y. Um threshold de proteína
 configurável, inicialmente 14, é traçado como linha horizontal sem filtrar materiais. O seletor de
-genótipos é independente, a exportação é em CSV e a regressão apenas dos checks e comerciais pode
-ser exibida ou ocultada.
+genótipos é independente, a exportação é em CSV e a regressão usa apenas checks e comerciais. A reta
+pode ser ocultada ou reexibida diretamente pela legenda do gráfico.
 
 ## Seleção
 

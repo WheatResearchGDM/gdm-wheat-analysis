@@ -599,7 +599,7 @@ button[data-baseweb="tab"][aria-selected="true"] {
     color: #FFFFFF;
 }
 
-/* Only the main page navigation sticks; nested result tabs scroll normally. */
+/* Main navigation and nested analysis/result navigation remain visible while scrolling. */
 [data-testid="stTabs"]:not([data-testid="stTabs"] [data-testid="stTabs"]) > div > div:has(> [role="tablist"]) {
     position: sticky;
     top: 3.75rem;
@@ -622,6 +622,22 @@ button[data-baseweb="tab"][aria-selected="true"] {
 [data-testid="stTabs"]:not([data-testid="stTabs"] [data-testid="stTabs"]) > div > div > [role="tablist"] > button {
     flex: 0 0 auto;
     margin-bottom: 0;
+}
+
+[data-testid="stTabs"] [data-testid="stTabs"] > div > div:has(> [role="tablist"]) {
+    position: sticky;
+    top: 8.35rem;
+    z-index: 980;
+    background: #F5F7F2;
+    padding: .45rem .2rem;
+    box-shadow: 0 6px 12px rgba(9,36,59,.08);
+    border-radius: 10px;
+}
+
+@media (max-width: 850px) {
+    [data-testid="stTabs"] [data-testid="stTabs"] > div > div:has(> [role="tablist"]) {
+        top: 11.75rem;
+    }
 }
 button[data-baseweb="tab"] p { color: inherit !important; }
 
@@ -2229,17 +2245,10 @@ with protein_page:
         horizontal=True,
         key="protein_value_source",
     )
-    threshold_column, regression_column = st.columns(2)
-    with threshold_column:
-        protein_threshold = st.number_input(
-            "Threshold de proteína", value=14.0, step=0.1,
-            key="protein_threshold",
-        )
-    with regression_column:
-        show_protein_regression = st.checkbox(
-            "Exibir reta de regressão", value=True,
-            key="protein_show_regression",
-        )
+    protein_threshold = st.number_input(
+        "Threshold de proteína", value=14.0, step=0.1,
+        key="protein_threshold",
+    )
     protein_fit = st.session_state.get("analysis") if protein_source.startswith("Estimados") else None
     protein_ready = protein_source == "Dados brutos" or (
         protein_fit is not None and protein_fit["response"] == "yield"
@@ -2320,7 +2329,7 @@ with protein_page:
                     protein_regression = reference_regression(
                         protein_plot, x="Estimativa", y="Proteína",
                     )
-                    if show_protein_regression and protein_regression is not None:
+                    if protein_regression is not None:
                         line_x = np.array([
                             protein_regression["xmin"], protein_regression["xmax"],
                         ])
@@ -2338,7 +2347,7 @@ with protein_page:
                     )
                     protein_fig.update_layout(height=580)
                     show_plot(protein_fig)
-                    if show_protein_regression and protein_regression is not None:
+                    if protein_regression is not None:
                         protein_r2 = format_decimal(protein_regression["r2"], 3)
                         st.caption(
                             "Regressão conjunta dos checks e comerciais incluídos: "
@@ -2346,7 +2355,7 @@ with protein_page:
                             f"({protein_regression['slope']:.4f}) × produtividade. "
                             f"R² = {protein_r2} · n = {protein_regression['n']} genótipos."
                         )
-                    elif show_protein_regression:
+                    else:
                         st.info(
                             "A regressão exige pelo menos dois checks/comerciais incluídos, "
                             "com valores distintos de produtividade."
@@ -2354,7 +2363,8 @@ with protein_page:
                     st.caption(
                         "Proteína: média bruta primeiro dentro de cada ensaio e depois entre ensaios, "
                         "com peso igual por ensaio. A produtividade segue o modo escolhido; "
-                        "o threshold é apenas uma referência visual e não filtra materiais."
+                        "o threshold é apenas uma referência visual e não filtra materiais. "
+                        "Clique na legenda para ocultar ou reexibir a regressão."
                     )
                     st.download_button(
                         "Baixar dados do gráfico de proteína",
