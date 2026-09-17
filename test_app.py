@@ -104,12 +104,17 @@ if "test_saved" in st.session_state:
             self.assertIn(group_label, labels)
         genotype_mode.set_value("Ciclo").run()
         self.assertIn("Ciclo · Não informado", [w.label for w in app.multiselect])
-        self.assertEqual([tab.label for tab in app.tabs[:10]], [
+        self.assertEqual([tab.label for tab in app.tabs[:7]], [
             "◎ Cenários / Datacut", "▦ Visão geral", "⌘ Conectividade",
             "◈ Modelo · BLUE / BLUP", "⌁ Diagnósticos", "↗ Resultados",
+            "◉ Análises",
+        ])
+        tab_labels = [tab.label for tab in app.tabs]
+        for analysis_tab in [
             "◷ Produtividade × ciclo", "◉ Produtividade × proteína", "◆ Seleção",
             "⇄ Índice ambiental",
-        ])
+        ]:
+            self.assertIn(analysis_tab, tab_labels)
         base = next(table.value for table in app.dataframe if "trial_unit_label" in table.value.columns)
         self.assertEqual(base.columns[0], "trial_unit_label")
         next(r for r in app.radio if r.label == "Valores do gráfico de ciclo").set_value("Dados brutos").run()
@@ -124,7 +129,17 @@ if "test_saved" in st.session_state:
         next(r for r in app.radio if r.label == "Valores de produtividade no gráfico de proteína").set_value(
             "Dados brutos"
         ).run()
+        protein_threshold = next(n for n in app.number_input if n.label == "Threshold de proteína")
+        self.assertEqual(protein_threshold.value, 14.0)
+        self.assertTrue(next(c for c in app.checkbox if c.label == "Exibir reta de regressão").value)
         self.assertGreater(len(multiselect(app, "Genótipos no gráfico de proteína").value), 0)
+        protein_threshold.set_value(15.0).run()
+        next(c for c in app.checkbox if c.label == "Exibir reta de regressão").uncheck().run()
+        self.assertEqual(
+            next(n for n in app.number_input if n.label == "Threshold de proteína").value,
+            15.0,
+        )
+        self.assertEqual(len(app.exception), 0)
         next(r for r in app.radio if r.label == "Valores do gráfico de seleção").set_value(
             "Dados brutos"
         ).run()

@@ -8,7 +8,7 @@ from scipy.stats import linregress
 from analysis import GENOTYPE, TRIAL, data_fingerprint, environmental_data
 from trial_units import identifier
 
-REPORTING_API_VERSION = 2
+REPORTING_API_VERSION = 3
 
 
 def genotype_count(data):
@@ -41,6 +41,24 @@ def genotype_connectivity(data):
     matrix.index.name = TRIAL
     matrix.columns.name = TRIAL
     return matrix.astype(int)
+
+
+def connectivity_cell_style(value, maximum):
+    """CSS color for connectivity: <=3 red, then yellow-to-green."""
+    if pd.isna(value):
+        return ""
+    numeric = float(value)
+    if numeric <= 3:
+        return "background-color: #F2A09A; color: #09243B; font-weight: 700"
+    span = max(float(maximum) - 4, 1)
+    fraction = min(max((numeric - 4) / span, 0), 1)
+    yellow = np.array([246, 205, 73], dtype=float)
+    green = np.array([91, 166, 86], dtype=float)
+    red, green_channel, blue = np.rint(yellow + fraction * (green - yellow)).astype(int)
+    return (
+        f"background-color: rgb({red}, {green_channel}, {blue}); "
+        "color: #09243B; font-weight: 700"
+    )
 
 
 def head_to_head_wins(values, genotype_a, genotype_b):

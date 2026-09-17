@@ -23,12 +23,13 @@ import reporting as reporting_module
 from trial_units import add_trial_unit_columns, SOURCE_ROW
 from scipy import stats
 
-EXPECTED_REPORTING_API_VERSION = 2
+EXPECTED_REPORTING_API_VERSION = 3
 if getattr(reporting_module, "REPORTING_API_VERSION", 0) != EXPECTED_REPORTING_API_VERSION:
     importlib.invalidate_caches()
     reporting_module = importlib.reload(reporting_module)
 
 cycle_data = reporting_module.cycle_data
+connectivity_cell_style = reporting_module.connectivity_cell_style
 genotype_connectivity = reporting_module.genotype_connectivity
 genotype_count = reporting_module.genotype_count
 head_to_head_wins = reporting_module.head_to_head_wins
@@ -1167,12 +1168,15 @@ st.markdown(
     unsafe_allow_html=True,
 )
 (scenario_page, overview_page, connectivity_page, model_page, diagnostics_page,
- results_page, cycle_page, protein_page, selection_page, environmental_page) = st.tabs([
+ results_page, analyses_page, environmental_page) = st.tabs([
     "◎ Cenários / Datacut", "▦ Visão geral", "⌘ Conectividade",
     "◈ Modelo · BLUE / BLUP", "⌁ Diagnósticos", "↗ Resultados",
-    "◷ Produtividade × ciclo", "◉ Produtividade × proteína", "◆ Seleção",
-    "⇄ Índice ambiental",
+    "◉ Análises", "⇄ Índice ambiental",
 ])
+with analyses_page:
+    cycle_page, protein_page, selection_page = st.tabs([
+        "◷ Produtividade × ciclo", "◉ Produtividade × proteína", "◆ Seleção",
+    ])
 
 with scenario_page:
     render_page_intro(
@@ -1494,7 +1498,12 @@ with connectivity_page:
         )
         connectivity_display = connectivity.copy()
         connectivity_display.index.name = TRIAL_DISPLAY_LABEL
-        st.dataframe(connectivity_display, width="stretch", height=560)
+        connectivity_maximum = int(connectivity_display.to_numpy().max())
+        connectivity_styled = connectivity_display.style.map(
+            lambda value: connectivity_cell_style(value, connectivity_maximum)
+        ).format("{:.0f}")
+        st.dataframe(connectivity_styled, width="stretch", height=560)
+        st.caption("Cores: vermelho = até 3 genótipos em comum; amarelo = intermediário; verde = maior conectividade.")
         st.download_button(
             "Baixar matriz de conectividade CSV",
             connectivity_display.to_csv(index=True),
@@ -2219,6 +2228,17 @@ with protein_page:
         horizontal=True,
         key="protein_value_source",
     )
+    threshold_column, regression_column = st.columns(2)
+    with threshold_column:
+        protein_threshold = st.number_input(
+            "Threshold de proteína", value=14.0, step=0.1,
+            key="protein_threshold",
+        )
+    with regression_column:
+        show_protein_regression = st.checkbox(
+            "Exibir reta de regressão", value=True,
+            key="protein_show_regression",
+        )
     protein_fit = st.session_state.get("analysis") if protein_source.startswith("Estimados") else None
     protein_ready = protein_source == "Dados brutos" or (
         protein_fit is not None and protein_fit["response"] == "yield"
@@ -2273,7 +2293,7 @@ with protein_page:
                         "Exibir nomes dos genótipos", value=False, key="protein_show_names",
                     )
                     protein_fig = px.scatter(
-                        protein_plot, x="Proteína", y="Estimativa", color="Categoria",
+                        protein_plot, x="Estimativa", y="Proteína", color="Categoria",
                         symbol="Categoria", hover_name="germplasm_name",
                         hover_data={
                             "gid": True, "n": True, "Ensaios": True,
@@ -2297,9 +2317,9 @@ with protein_page:
                     )
                     protein_fig.update_traces(marker_size=11, textposition="top center")
                     protein_regression = reference_regression(
-                        protein_plot, x="Proteína", y="Estimativa",
+                        protein_plot, x="Estimativa", y="Proteína",
                     )
-                    if protein_regression is not None:
+                    if show_protein_regression and protein_regression is not None:
                         line_x = np.array([
                             protein_regression["xmin"], protein_regression["xmax"],
                         ])
@@ -2309,24 +2329,31 @@ with protein_page:
                             mode="lines", name="Regressão · checks + comerciais",
                             line=dict(color=GDM_NAVY, width=2, dash="dash"),
                         ))
+                    protein_fig.add_hline(
+                        y=protein_threshold,
+                        line_dash="dot",
+                        line_color=GDM_CORAL,
+                        annotation_text=f"Threshold de proteína · {protein_threshold:g}",
+                    )
                     protein_fig.update_layout(height=580)
                     show_plot(protein_fig)
-                    if protein_regression is not None:
+                    if show_protein_regression and protein_regression is not None:
                         protein_r2 = format_decimal(protein_regression["r2"], 3)
                         st.caption(
                             "Regressão conjunta dos checks e comerciais incluídos: "
                             f"y = {protein_regression['intercept']:.2f} + "
-                            f"({protein_regression['slope']:.2f}) × proteína. "
+                            f"({protein_regression['slope']:.4f}) × produtividade. "
                             f"R² = {protein_r2} · n = {protein_regression['n']} genótipos."
                         )
-                    else:
+                    elif show_protein_regression:
                         st.info(
                             "A regressão exige pelo menos dois checks/comerciais incluídos, "
-                            "com valores distintos de proteína."
+                            "com valores distintos de produtividade."
                         )
                     st.caption(
                         "Proteína: média bruta primeiro dentro de cada ensaio e depois entre ensaios, "
-                        "com peso igual por ensaio. A produtividade segue o modo escolhido."
+                        "com peso igual por ensaio. A produtividade segue o modo escolhido; "
+                        "o threshold é apenas uma referência visual e não filtra materiais."
                     )
                     st.download_button(
                         "Baixar dados do gráfico de proteína",

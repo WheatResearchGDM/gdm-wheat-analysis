@@ -5,8 +5,9 @@ import pandas as pd
 
 from analysis import GENOTYPE, TRIAL, fit_trial_model
 from reporting import (
-    cycle_data, genotype_connectivity, genotype_count, head_to_head_wins,
-    model_equation, protein_data, reference_regression, selection_tiers,
+    connectivity_cell_style, cycle_data, genotype_connectivity, genotype_count,
+    head_to_head_wins, model_equation, protein_data, reference_regression,
+    selection_tiers,
 )
 from test_analysis import trial_data
 
@@ -22,6 +23,9 @@ class ReportingTests(unittest.TestCase):
         self.assertEqual(matrix.loc["T1", "T2"], 1)
         self.assertEqual(matrix.loc["T1", "T3"], 0)
         self.assertTrue(matrix.equals(matrix.T))
+        self.assertIn("#F2A09A", connectivity_cell_style(3, 12))
+        self.assertIn("rgb(246, 205, 73)", connectivity_cell_style(4, 12))
+        self.assertIn("rgb(91, 166, 86)", connectivity_cell_style(12, 12))
 
     def test_genotype_count_uses_gid_instead_of_collapsing_equal_names(self):
         data = pd.DataFrame({

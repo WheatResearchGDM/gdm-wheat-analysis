@@ -36,13 +36,14 @@ Na visão geral, o gráfico de médias por ensaio ocupa a largura da página, ab
 Os indicadores de quantidade de genótipos usam `gid` como identidade, assim como a seleção de materiais;
 nomes textuais repetidos não reduzem artificialmente essa contagem.
 
-A navegação principal permanece no topo durante a rolagem, na ordem: **Cenários / Datacut → Visão geral → Conectividade → Modelo → Diagnósticos → Resultados → Produtividade × ciclo → Produtividade × proteína → Seleção → Índice ambiental**. País, estado e local não aparecem como filtros separados; use **Ano | Ensaio | Local / Ambiente DEV**, que também é a primeira coluna da Base filtrada.
+A navegação principal permanece no topo durante a rolagem, na ordem: **Cenários / Datacut → Visão geral → Conectividade → Modelo → Diagnósticos → Resultados → Análises → Índice ambiental**. Em **Análises** ficam as subabas **Produtividade × ciclo**, **Produtividade × proteína** e **Seleção**. País, estado e local não aparecem como filtros separados; use **Ano | Ensaio | Local / Ambiente DEV**, que também é a primeira coluna da Base filtrada.
 
 ## Conectividade entre ensaios
 
 A aba **Conectividade** apresenta uma matriz ensaio × ensaio. Cada célula conta os `gid` distintos
 presentes nos dois ensaios, sem contar repetições de parcela; a diagonal informa o total de genótipos
-do próprio ensaio. A matriz pode ser exportada em CSV.
+do próprio ensaio. Células com conectividade até 3 são vermelhas; as demais seguem uma escala de
+amarelo a verde conforme a conectividade aumenta. A matriz pode ser exportada em CSV.
 
 ## Salvar e abrir cenários
 
@@ -95,7 +96,10 @@ O seletor de genótipos altera apenas o gráfico e sua regressão. A regressão 
 A aba **Produtividade × proteína** permite alternar a produtividade entre dados brutos e a estimativa
 BLUE/BLUP válida para o datacut. `protein` é sempre bruto: primeiro se calcula a média das parcelas
 dentro de cada ensaio e depois a média entre ensaios, dando peso igual a cada ensaio. O gráfico tem
-um ponto por genótipo, seletor independente, exportação CSV e regressão apenas dos checks e comerciais.
+um ponto por genótipo, produtividade no eixo X e proteína no eixo Y. Um threshold de proteína
+configurável, inicialmente 14, é traçado como linha horizontal sem filtrar materiais. O seletor de
+genótipos é independente, a exportação é em CSV e a regressão apenas dos checks e comerciais pode
+ser exibida ou ocultada.
 
 ## Seleção
 
