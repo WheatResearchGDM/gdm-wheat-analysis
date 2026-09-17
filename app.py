@@ -2383,6 +2383,11 @@ with selection_page:
         "Valores do gráfico de seleção", ["Estimados (BLUE / BLUP)", "Dados brutos"],
         horizontal=True, key="selection_value_source",
     )
+    show_check_mean = st.checkbox(
+        "Exibir média das testemunhas", value=True,
+        key="selection_show_check_mean",
+        help="Controla apenas a linha horizontal; a média continua sendo usada para calcular os tiers.",
+    )
     selection_fit = st.session_state.get("analysis") if selection_source.startswith("Estimados") else None
     selection_ready = selection_source == "Dados brutos" or (
         selection_fit is not None and selection_fit["response"] == "yield"
@@ -2467,10 +2472,11 @@ with selection_page:
                         mode="lines", name="Regressão · checks + comerciais",
                         line=dict(color="#111111", width=2, dash="dash"),
                     ))
-                selection_fig.add_hline(
-                    y=check_mean, line_dash="dot", line_color=GDM_GRAY,
-                    annotation_text="Média das testemunhas",
-                )
+                if show_check_mean:
+                    selection_fig.add_hline(
+                        y=check_mean, line_dash="dot", line_color=GDM_GRAY,
+                        annotation_text="Média das testemunhas",
+                    )
                 selection_fig.update_layout(height=580)
                 show_plot(selection_fig)
                 if selection_regression is not None:

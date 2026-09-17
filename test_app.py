@@ -143,6 +143,12 @@ if "test_saved" in st.session_state:
         next(r for r in app.radio if r.label == "Valores do gráfico de seleção").set_value(
             "Dados brutos"
         ).run()
+        check_mean_toggle = next(c for c in app.checkbox if c.label == "Exibir média das testemunhas")
+        self.assertTrue(check_mean_toggle.value)
+        check_mean_toggle.uncheck().run()
+        self.assertFalse(next(
+            c for c in app.checkbox if c.label == "Exibir média das testemunhas"
+        ).value)
         self.assertGreater(len(multiselect(app, "Genótipos no gráfico de seleção").value), 0)
         connectivity = next(
             table.value for table in app.dataframe

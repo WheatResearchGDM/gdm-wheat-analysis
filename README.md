@@ -107,7 +107,8 @@ A aba **Seleção** replica a análise de produtividade × ciclo, com produtivid
 Checks e comerciais compartilham a legenda preta e são os únicos materiais usados na regressão.
 Os demais materiais são classificados contra a média de produtividade das testemunhas do datacut:
 ganho acima de 5% em verde, ganho acima de 0% até 5% em amarelo e ganho nulo ou negativo em vermelho.
-O valor percentual e a categoria original permanecem no hover e no CSV.
+O valor percentual e a categoria original permanecem no hover e no CSV. A linha horizontal da média
+das testemunhas pode ser exibida ou ocultada sem alterar a classificação dos tiers.
 
 Referência técnica: [componentes de variância e fatores cruzados no statsmodels](https://www.statsmodels.org/stable/examples/notebooks/generated/variance_components.html).
 
