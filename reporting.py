@@ -8,6 +8,8 @@ from scipy.stats import linregress
 from analysis import GENOTYPE, TRIAL, data_fingerprint, environmental_data
 from trial_units import identifier
 
+REPORTING_API_VERSION = 2
+
 
 def genotype_count(data):
     """Count genotype identities by GID, falling back to the displayed name."""

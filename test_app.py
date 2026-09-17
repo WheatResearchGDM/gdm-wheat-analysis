@@ -136,6 +136,17 @@ if "test_saved" in st.session_state:
         self.assertEqual(connectivity.shape[0], connectivity.shape[1])
         self.assertEqual(len(app.exception), 0)
 
+    def test_reporting_module_is_reloaded_after_hot_deploy(self):
+        stale_prefix = '''
+import reporting as stale_reporting
+for stale_name in ["REPORTING_API_VERSION", "genotype_connectivity", "protein_data", "selection_tiers"]:
+    if hasattr(stale_reporting, stale_name):
+        delattr(stale_reporting, stale_name)
+'''
+        app = AppTest.from_string(stale_prefix + self.source, default_timeout=45).run()
+        self.assertEqual(len(app.exception), 0)
+        self.assertIn("⌘ Conectividade", [tab.label for tab in app.tabs])
+
     def test_refit_and_restore_keep_datacut_intact(self):
         app = AppTest.from_file("app.py", default_timeout=90).run()
         next(r for r in app.radio if r.label == "Estrutura do modelo").set_value("Personalizado").run()

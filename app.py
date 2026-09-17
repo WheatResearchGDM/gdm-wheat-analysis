@@ -4,6 +4,7 @@ Versao com dados demonstrativos embutidos (sem dependencia de SQL Warehouse).
 
 import hashlib
 import html
+import importlib
 import json
 from datetime import datetime, timezone
 from io import BytesIO
@@ -18,12 +19,23 @@ from analysis import (
     BLOCK, NESTED_BLOCK, YEAR, data_fingerprint, diagnostic_data,
     environmental_data, fit_trial_model, refit_without_outliers,
 )
-from reporting import (
-    cycle_data, genotype_connectivity, genotype_count, head_to_head_wins,
-    model_equation, protein_data, reference_regression, selection_tiers,
-)
+import reporting as reporting_module
 from trial_units import add_trial_unit_columns, SOURCE_ROW
 from scipy import stats
+
+EXPECTED_REPORTING_API_VERSION = 2
+if getattr(reporting_module, "REPORTING_API_VERSION", 0) != EXPECTED_REPORTING_API_VERSION:
+    importlib.invalidate_caches()
+    reporting_module = importlib.reload(reporting_module)
+
+cycle_data = reporting_module.cycle_data
+genotype_connectivity = reporting_module.genotype_connectivity
+genotype_count = reporting_module.genotype_count
+head_to_head_wins = reporting_module.head_to_head_wins
+model_equation = reporting_module.model_equation
+protein_data = reporting_module.protein_data
+reference_regression = reporting_module.reference_regression
+selection_tiers = reporting_module.selection_tiers
 
 # ---------------------------------------------------------------------------
 # Config
