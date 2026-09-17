@@ -608,6 +608,20 @@ button[data-baseweb="tab"][aria-selected="true"] {
     box-shadow: 0 7px 14px rgba(9,36,59,.10);
     border-radius: 12px;
 }
+
+/* Keep every main navigation item reachable when the tabs exceed the viewport. */
+[data-testid="stTabs"]:not([data-testid="stTabs"] [data-testid="stTabs"]) > div > div > [role="tablist"] {
+    flex-wrap: wrap !important;
+    gap: .45rem 0;
+    height: auto !important;
+    overflow: visible !important;
+    white-space: normal !important;
+}
+
+[data-testid="stTabs"]:not([data-testid="stTabs"] [data-testid="stTabs"]) > div > div > [role="tablist"] > button {
+    flex: 0 0 auto;
+    margin-bottom: 0;
+}
 button[data-baseweb="tab"] p { color: inherit !important; }
 
 .stButton > button[kind="primary"],
