@@ -19,8 +19,8 @@ from analysis import (
     environmental_data, fit_trial_model, refit_without_outliers,
 )
 from reporting import (
-    cycle_data, genotype_count, head_to_head_wins, model_equation,
-    reference_regression,
+    cycle_data, genotype_connectivity, genotype_count, head_to_head_wins,
+    model_equation, protein_data, reference_regression, selection_tiers,
 )
 from trial_units import add_trial_unit_columns, SOURCE_ROW
 from scipy import stats
@@ -1140,10 +1140,12 @@ st.markdown(
     '<div class="gdm-eyebrow">GDM · Wheat Research</div>',
     unsafe_allow_html=True,
 )
-(scenario_page, overview_page, model_page, diagnostics_page,
- results_page, cycle_page, environmental_page) = st.tabs([
-    "◎ Cenários / Datacut", "▦ Visão geral", "◈ Modelo · BLUE / BLUP",
-    "⌁ Diagnósticos", "↗ Resultados", "◷ Produtividade × ciclo", "⇄ Índice ambiental",
+(scenario_page, overview_page, connectivity_page, model_page, diagnostics_page,
+ results_page, cycle_page, protein_page, selection_page, environmental_page) = st.tabs([
+    "◎ Cenários / Datacut", "▦ Visão geral", "⌘ Conectividade",
+    "◈ Modelo · BLUE / BLUP", "⌁ Diagnósticos", "↗ Resultados",
+    "◷ Produtividade × ciclo", "◉ Produtividade × proteína", "◆ Seleção",
+    "⇄ Índice ambiental",
 ])
 
 with scenario_page:
@@ -1447,6 +1449,32 @@ with overview_page:
         "wheat_data.csv",
         "text/csv",
     )
+
+# ---------------------------------------------------------------------------
+# Page: Genotype connectivity between trials
+# ---------------------------------------------------------------------------
+with connectivity_page:
+    render_page_intro(
+        "Rede de ensaios",
+        "Conectividade de genótipos",
+        "Cada célula informa quantos GIDs estão presentes nos dois ensaios; a diagonal mostra o total do próprio ensaio.",
+    )
+    connectivity = genotype_connectivity(st.session_state["df"])
+    if connectivity.empty:
+        st.info("Não há ensaios e genótipos suficientes no datacut para montar a matriz.")
+    else:
+        st.caption(
+            f"{len(connectivity)} ensaio(s) no datacut. A matriz usa GID como identidade e ignora parcelas repetidas."
+        )
+        connectivity_display = connectivity.copy()
+        connectivity_display.index.name = TRIAL_DISPLAY_LABEL
+        st.dataframe(connectivity_display, width="stretch", height=560)
+        st.download_button(
+            "Baixar matriz de conectividade CSV",
+            connectivity_display.to_csv(index=True),
+            "conectividade_genotipos_entre_ensaios.csv",
+            "text/csv",
+        )
 
 # ---------------------------------------------------------------------------
 # Page: Environmental index head-to-head
@@ -2151,3 +2179,256 @@ with cycle_page:
                                "O ciclo vem exclusivamente de days_to_spike da aba auxiliar, não de cycle.")
                     st.download_button("Baixar dados do gráfico de ciclo", cycle_plot.to_csv(index=False),
                                        "produtividade_por_ciclo.csv", "text/csv")
+
+
+with protein_page:
+    render_page_intro(
+        "Qualidade industrial",
+        "Produtividade × proteína",
+        "Um ponto por genótipo; proteína sempre bruta e produtividade bruta ou estimada.",
+    )
+    protein_source = st.radio(
+        "Valores de produtividade no gráfico de proteína",
+        ["Estimados (BLUE / BLUP)", "Dados brutos"],
+        horizontal=True,
+        key="protein_value_source",
+    )
+    protein_fit = st.session_state.get("analysis") if protein_source.startswith("Estimados") else None
+    protein_ready = protein_source == "Dados brutos" or (
+        protein_fit is not None and protein_fit["response"] == "yield"
+        and protein_fit["signature"] == current_signature
+    )
+    if "protein" not in st.session_state["df"]:
+        st.info("A coluna protein não está disponível no datacut.")
+    elif not protein_ready:
+        st.info("Calcule BLUE ou BLUP para yield no datacut atual ou escolha Dados brutos.")
+    else:
+        try:
+            protein_points, excluded_protein = protein_data(
+                st.session_state["df"], available_materials, protein_fit,
+            )
+        except ValueError as exc:
+            st.info(str(exc))
+        else:
+            if excluded_protein:
+                st.warning(
+                    f"{excluded_protein} genótipo(s) sem proteína válida ou com vínculo GID ambíguo "
+                    "foram omitidos deste gráfico."
+                )
+            if protein_points.empty:
+                st.info("Não há genótipos com produtividade e proteína válidas neste recorte.")
+            else:
+                protein_options = sorted(protein_points["germplasm_name"].unique())
+                protein_key = f"protein_genotypes_{source_id}"
+                if protein_key not in st.session_state:
+                    st.session_state[protein_key] = protein_options
+                else:
+                    st.session_state[protein_key] = [
+                        genotype for genotype in st.session_state[protein_key]
+                        if genotype in protein_options
+                    ]
+                if st.button("Incluir todos no gráfico de proteína"):
+                    st.session_state[protein_key] = protein_options
+                included_protein = st.multiselect(
+                    "Genótipos no gráfico de proteína", protein_options, key=protein_key,
+                    help="Altera somente este gráfico e sua regressão. Limpar remove todos.",
+                )
+                protein_plot = protein_points.loc[
+                    protein_points["germplasm_name"].isin(included_protein)
+                ]
+                if protein_plot.empty:
+                    st.info("Inclua pelo menos um genótipo para exibir o gráfico.")
+                else:
+                    productivity_label = (
+                        f"Produtividade estimada · {protein_fit['method']}"
+                        if protein_fit else "Produtividade média bruta"
+                    )
+                    show_protein_names = st.checkbox(
+                        "Exibir nomes dos genótipos", value=False, key="protein_show_names",
+                    )
+                    protein_fig = px.scatter(
+                        protein_plot, x="Proteína", y="Estimativa", color="Categoria",
+                        symbol="Categoria", hover_name="germplasm_name",
+                        hover_data={
+                            "gid": True, "n": True, "Ensaios": True,
+                            "n_proteína": True, "Ensaios_proteína": True,
+                            "Proteína": ":.2f", "Estimativa": ":.1f",
+                        },
+                        text="germplasm_name" if show_protein_names else None,
+                        color_discrete_map={
+                            "Check": GDM_NAVY, "Comercial": GDM_LIME,
+                            "Experimental": GDM_CORAL, "Não informada": GDM_GRAY,
+                        },
+                        labels={
+                            "Proteína": "Proteína média bruta",
+                            "Estimativa": productivity_label,
+                            "n": "Parcelas de produtividade",
+                            "Ensaios": "Ensaios de produtividade",
+                            "n_proteína": "Parcelas com proteína",
+                            "Ensaios_proteína": "Ensaios com proteína",
+                        },
+                        title="Produtividade e proteína dos genótipos",
+                    )
+                    protein_fig.update_traces(marker_size=11, textposition="top center")
+                    protein_regression = reference_regression(
+                        protein_plot, x="Proteína", y="Estimativa",
+                    )
+                    if protein_regression is not None:
+                        line_x = np.array([
+                            protein_regression["xmin"], protein_regression["xmax"],
+                        ])
+                        protein_fig.add_trace(go.Scatter(
+                            x=line_x,
+                            y=protein_regression["intercept"] + protein_regression["slope"] * line_x,
+                            mode="lines", name="Regressão · checks + comerciais",
+                            line=dict(color=GDM_NAVY, width=2, dash="dash"),
+                        ))
+                    protein_fig.update_layout(height=580)
+                    show_plot(protein_fig)
+                    if protein_regression is not None:
+                        protein_r2 = format_decimal(protein_regression["r2"], 3)
+                        st.caption(
+                            "Regressão conjunta dos checks e comerciais incluídos: "
+                            f"y = {protein_regression['intercept']:.2f} + "
+                            f"({protein_regression['slope']:.2f}) × proteína. "
+                            f"R² = {protein_r2} · n = {protein_regression['n']} genótipos."
+                        )
+                    else:
+                        st.info(
+                            "A regressão exige pelo menos dois checks/comerciais incluídos, "
+                            "com valores distintos de proteína."
+                        )
+                    st.caption(
+                        "Proteína: média bruta primeiro dentro de cada ensaio e depois entre ensaios, "
+                        "com peso igual por ensaio. A produtividade segue o modo escolhido."
+                    )
+                    st.download_button(
+                        "Baixar dados do gráfico de proteína",
+                        protein_plot.to_csv(index=False),
+                        "produtividade_por_proteina.csv", "text/csv",
+                    )
+
+
+with selection_page:
+    render_page_intro(
+        "Avanço de materiais",
+        "Seleção · produtividade × ciclo",
+        "Checks e comerciais formam a referência; os demais materiais são classificados pelo ganho sobre a média das testemunhas.",
+    )
+    selection_source = st.radio(
+        "Valores do gráfico de seleção", ["Estimados (BLUE / BLUP)", "Dados brutos"],
+        horizontal=True, key="selection_value_source",
+    )
+    selection_fit = st.session_state.get("analysis") if selection_source.startswith("Estimados") else None
+    selection_ready = selection_source == "Dados brutos" or (
+        selection_fit is not None and selection_fit["response"] == "yield"
+        and selection_fit["signature"] == current_signature
+    )
+    if not selection_ready:
+        st.info("Calcule BLUE ou BLUP para yield no datacut atual ou escolha Dados brutos.")
+    else:
+        try:
+            selection_points, excluded_selection = cycle_data(
+                st.session_state["df"], available_materials, selection_fit,
+            )
+            selection_points, check_mean = selection_tiers(selection_points)
+        except ValueError as exc:
+            st.info(str(exc))
+        else:
+            if excluded_selection:
+                st.warning(
+                    f"{excluded_selection} genótipo(s) sem dias ao espigamento válidos ou com vínculo GID ambíguo "
+                    "foram omitidos deste gráfico."
+                )
+            selection_options = sorted(selection_points["germplasm_name"].unique())
+            selection_key = f"selection_genotypes_{source_id}"
+            if selection_key not in st.session_state:
+                st.session_state[selection_key] = selection_options
+            else:
+                st.session_state[selection_key] = [
+                    genotype for genotype in st.session_state[selection_key]
+                    if genotype in selection_options
+                ]
+            if st.button("Incluir todos no gráfico de seleção"):
+                st.session_state[selection_key] = selection_options
+            included_selection = st.multiselect(
+                "Genótipos no gráfico de seleção", selection_options, key=selection_key,
+                help="Altera somente este gráfico e sua regressão. Limpar remove todos.",
+            )
+            selection_plot = selection_points.loc[
+                selection_points["germplasm_name"].isin(included_selection)
+            ]
+            if selection_plot.empty:
+                st.info("Inclua pelo menos um genótipo para exibir o gráfico.")
+            else:
+                selection_label = (
+                    f"Produtividade estimada · {selection_fit['method']}"
+                    if selection_fit else "Produtividade média bruta"
+                )
+                show_selection_names = st.checkbox(
+                    "Exibir nomes dos genótipos", value=False, key="selection_show_names",
+                )
+                tier_colors = {
+                    "Checks + Comerciais": "#111111",
+                    "Tier > 5%": "#2E8B57",
+                    "Tier 0,1% a 5%": "#E0B400",
+                    "Tier ≤ 0%": "#D55E45",
+                }
+                selection_fig = px.scatter(
+                    selection_plot, x="days_to_spike", y="Estimativa", color="Tier",
+                    symbol="Tier", hover_name="germplasm_name",
+                    hover_data={
+                        "gid": True, "Categoria": True,
+                        "Ganho vs. testemunhas (%)": ":.2f",
+                        "days_to_spike": ":.1f", "Estimativa": ":.1f",
+                    },
+                    text="germplasm_name" if show_selection_names else None,
+                    color_discrete_map=tier_colors,
+                    category_orders={"Tier": list(tier_colors)},
+                    labels={
+                        "days_to_spike": "Dias ao espigamento · aba auxiliar",
+                        "Estimativa": selection_label,
+                    },
+                    title="Seleção por produtividade e ciclo",
+                )
+                selection_fig.update_traces(marker_size=11, textposition="top center")
+                selection_regression = reference_regression(selection_plot)
+                if selection_regression is not None:
+                    line_x = np.array([
+                        selection_regression["xmin"], selection_regression["xmax"],
+                    ])
+                    selection_fig.add_trace(go.Scatter(
+                        x=line_x,
+                        y=selection_regression["intercept"] + selection_regression["slope"] * line_x,
+                        mode="lines", name="Regressão · checks + comerciais",
+                        line=dict(color="#111111", width=2, dash="dash"),
+                    ))
+                selection_fig.add_hline(
+                    y=check_mean, line_dash="dot", line_color=GDM_GRAY,
+                    annotation_text="Média das testemunhas",
+                )
+                selection_fig.update_layout(height=580)
+                show_plot(selection_fig)
+                if selection_regression is not None:
+                    selection_r2 = format_decimal(selection_regression["r2"], 3)
+                    st.caption(
+                        "Regressão somente dos checks + comerciais incluídos: "
+                        f"y = {selection_regression['intercept']:.2f} + "
+                        f"({selection_regression['slope']:.2f}) × dias. "
+                        f"R² = {selection_r2} · n = {selection_regression['n']} genótipos."
+                    )
+                else:
+                    st.info(
+                        "A regressão exige pelo menos dois checks/comerciais incluídos, "
+                        "com dias ao espigamento distintos."
+                    )
+                st.caption(
+                    f"Referência dos tiers: média de todas as testemunhas válidas do datacut = {check_mean:,.1f}. "
+                    "Checks e comerciais são exibidos juntos em preto. Experimentais: ganho > 5% em verde; "
+                    "ganho > 0% até 5% em amarelo; sem ganho em vermelho."
+                )
+                st.download_button(
+                    "Baixar dados do gráfico de seleção",
+                    selection_plot.to_csv(index=False),
+                    "selecao_produtividade_ciclo.csv", "text/csv",
+                )

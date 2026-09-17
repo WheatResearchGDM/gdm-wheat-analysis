@@ -5,13 +5,24 @@ import pandas as pd
 
 from analysis import GENOTYPE, TRIAL, fit_trial_model
 from reporting import (
-    cycle_data, genotype_count, head_to_head_wins, model_equation,
-    reference_regression,
+    cycle_data, genotype_connectivity, genotype_count, head_to_head_wins,
+    model_equation, protein_data, reference_regression, selection_tiers,
 )
 from test_analysis import trial_data
 
 
 class ReportingTests(unittest.TestCase):
+    def test_connectivity_counts_unique_gids_shared_between_trials(self):
+        data = pd.DataFrame({
+            TRIAL: ["T1", "T1", "T1", "T2", "T2", "T3"],
+            "gid": ["G1", "G1", "G2", "G2", "G3", "G4"],
+        })
+        matrix = genotype_connectivity(data)
+        self.assertEqual(matrix.loc["T1", "T1"], 2)
+        self.assertEqual(matrix.loc["T1", "T2"], 1)
+        self.assertEqual(matrix.loc["T1", "T3"], 0)
+        self.assertTrue(matrix.equals(matrix.T))
+
     def test_genotype_count_uses_gid_instead_of_collapsing_equal_names(self):
         data = pd.DataFrame({
             "gid": [101, 101, 202, 202],
@@ -19,6 +30,48 @@ class ReportingTests(unittest.TestCase):
         })
         self.assertEqual(genotype_count(data), 2)
         self.assertEqual(genotype_count(data.drop(columns="gid")), 1)
+
+    def test_protein_is_raw_trial_weighted_with_raw_or_estimated_yield(self):
+        data = pd.DataFrame({
+            GENOTYPE: ["A", "A", "A", "B", "B"],
+            "gid": ["1", "1", "1", "2", "2"],
+            TRIAL: ["T1", "T1", "T2", "T1", "T2"],
+            "yield": [100, 100, 300, 200, 400],
+            "protein": ["10,0", "14,0", "20,0", "11,0", "13,0"],
+        })
+        materials = pd.DataFrame({
+            "gid": ["1", "2"], "category": ["CHECK", "EXPERIMENTAL"],
+        })
+        raw, excluded = protein_data(data, materials)
+        self.assertEqual(excluded, 0)
+        raw = raw.set_index(GENOTYPE)
+        self.assertEqual(raw.loc["A", "Proteína"], 16)
+        self.assertEqual(raw.loc["A", "Estimativa"], 200)
+        self.assertEqual(raw.loc["A", "n_proteína"], 3)
+
+        fit_data = pd.concat([data] * 5, ignore_index=True)
+        fit_data[TRIAL] = [f"{trial}-{copy}" for copy in range(5) for trial in data[TRIAL]]
+        fit = fit_trial_model(fit_data, method="BLUE", interaction=False)
+        estimated, _ = protein_data(fit_data, materials, fit)
+        expected = fit["genotypes"].set_index(GENOTYPE)["Estimativa"]
+        np.testing.assert_allclose(
+            estimated.set_index(GENOTYPE)["Estimativa"].sort_index(), expected.sort_index(),
+        )
+
+    def test_selection_tiers_and_check_baseline(self):
+        points = pd.DataFrame({
+            GENOTYPE: ["Check", "Comercial", "Verde", "Amarelo", "Vermelho"],
+            "Categoria": ["Check", "Comercial", "Experimental", "Experimental", "Experimental"],
+            "Estimativa": [100, 140, 106, 103, 100],
+        })
+        classified, check_mean = selection_tiers(points)
+        tiers = classified.set_index(GENOTYPE)["Tier"]
+        self.assertEqual(check_mean, 100)
+        self.assertEqual(tiers["Check"], "Checks + Comerciais")
+        self.assertEqual(tiers["Comercial"], "Checks + Comerciais")
+        self.assertEqual(tiers["Verde"], "Tier > 5%")
+        self.assertEqual(tiers["Amarelo"], "Tier 0,1% a 5%")
+        self.assertEqual(tiers["Vermelho"], "Tier ≤ 0%")
 
     def test_wins_ties_and_unpaired_trials(self):
         values = pd.DataFrame({TRIAL: ["e1", "e1", "e2", "e2", "e3", "e3", "e4"],

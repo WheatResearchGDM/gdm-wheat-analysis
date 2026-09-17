@@ -73,7 +73,7 @@ if "test_saved" in st.session_state:
         self.assertEqual(len(app.exception), 0)
         self.assertEqual(app.session_state["analysis"]["method"], "BLUE")
         self.assertEqual(len(app.error), 0)
-        self.assertEqual(len(app.get("plotly_chart")), 10)
+        self.assertEqual(len(app.get("plotly_chart")), 12)
         self.assertEqual(len(app.latex), 1)
         self.assertIn("n", app.session_state["analysis"]["genotypes"])
         next(r for r in app.radio if r.label == "Valores do gráfico de ciclo").set_value("Dados brutos").run()
@@ -104,9 +104,12 @@ if "test_saved" in st.session_state:
             self.assertIn(group_label, labels)
         genotype_mode.set_value("Ciclo").run()
         self.assertIn("Ciclo · Não informado", [w.label for w in app.multiselect])
-        self.assertEqual([tab.label for tab in app.tabs[:7]], [
-            "◎ Cenários / Datacut", "▦ Visão geral", "◈ Modelo · BLUE / BLUP", "⌁ Diagnósticos",
-            "↗ Resultados", "◷ Produtividade × ciclo", "⇄ Índice ambiental"])
+        self.assertEqual([tab.label for tab in app.tabs[:10]], [
+            "◎ Cenários / Datacut", "▦ Visão geral", "⌘ Conectividade",
+            "◈ Modelo · BLUE / BLUP", "⌁ Diagnósticos", "↗ Resultados",
+            "◷ Produtividade × ciclo", "◉ Produtividade × proteína", "◆ Seleção",
+            "⇄ Índice ambiental",
+        ])
         base = next(table.value for table in app.dataframe if "trial_unit_label" in table.value.columns)
         self.assertEqual(base.columns[0], "trial_unit_label")
         next(r for r in app.radio if r.label == "Valores do gráfico de ciclo").set_value("Dados brutos").run()
@@ -117,6 +120,21 @@ if "test_saved" in st.session_state:
         self.assertEqual(len(app.exception), 0)
         next(b for b in app.button if b.label == "Incluir todos no gráfico de ciclo").click().run()
         self.assertGreater(len(multiselect(app, "Genótipos no gráfico de ciclo").value), 0)
+
+        next(r for r in app.radio if r.label == "Valores de produtividade no gráfico de proteína").set_value(
+            "Dados brutos"
+        ).run()
+        self.assertGreater(len(multiselect(app, "Genótipos no gráfico de proteína").value), 0)
+        next(r for r in app.radio if r.label == "Valores do gráfico de seleção").set_value(
+            "Dados brutos"
+        ).run()
+        self.assertGreater(len(multiselect(app, "Genótipos no gráfico de seleção").value), 0)
+        connectivity = next(
+            table.value for table in app.dataframe
+            if table.value.index.name == "Ano | Ensaio | Local / Ambiente DEV"
+        )
+        self.assertEqual(connectivity.shape[0], connectivity.shape[1])
+        self.assertEqual(len(app.exception), 0)
 
     def test_refit_and_restore_keep_datacut_intact(self):
         app = AppTest.from_file("app.py", default_timeout=90).run()

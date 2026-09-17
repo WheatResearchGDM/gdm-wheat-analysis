@@ -36,7 +36,13 @@ Na visão geral, o gráfico de médias por ensaio ocupa a largura da página, ab
 Os indicadores de quantidade de genótipos usam `gid` como identidade, assim como a seleção de materiais;
 nomes textuais repetidos não reduzem artificialmente essa contagem.
 
-A navegação principal permanece no topo durante a rolagem, na ordem: **Cenários / Datacut → Visão geral → Modelo → Diagnósticos → Resultados → Produtividade × ciclo → Índice ambiental**. País, estado e local não aparecem como filtros separados; use **Ano | Ensaio | Local / Ambiente DEV**, que também é a primeira coluna da Base filtrada.
+A navegação principal permanece no topo durante a rolagem, na ordem: **Cenários / Datacut → Visão geral → Conectividade → Modelo → Diagnósticos → Resultados → Produtividade × ciclo → Produtividade × proteína → Seleção → Índice ambiental**. País, estado e local não aparecem como filtros separados; use **Ano | Ensaio | Local / Ambiente DEV**, que também é a primeira coluna da Base filtrada.
+
+## Conectividade entre ensaios
+
+A aba **Conectividade** apresenta uma matriz ensaio × ensaio. Cada célula conta os `gid` distintos
+presentes nos dois ensaios, sem contar repetições de parcela; a diagonal informa o total de genótipos
+do próprio ensaio. A matriz pode ser exportada em CSV.
 
 ## Salvar e abrir cenários
 
@@ -83,6 +89,21 @@ O gráfico de rosca do índice ambiental conta uma vitória por ensaio comum, a 
 Em **Produtividade × ciclo**, o eixo X usa `days_to_spike` da aba auxiliar, vinculada por `gid` (não a coluna textual `cycle`). Cada ponto é um genótipo. No modo estimado, o eixo Y usa a média ajustada/predita geral de yield, por BLUE ou BLUP, não apenas o desvio aleatório. No modo bruto, usa a média das médias por ensaio observado, com pesos iguais entre ensaios. Os dias demonstrativos são sintéticos.
 
 O seletor de genótipos altera apenas o gráfico e sua regressão. A regressão linear com intercepto combina os **checks e comerciais incluídos**, com peso igual por genótipo, e exige pelo menos duas referências com dias distintos. Exibe equação, R² e número de referências; não extrapola a linha além do ciclo das referências. Materiais sem dias válidos ou com vínculo ambíguo entre nome e GID são omitidos com aviso, sem inventar valores. As categorias CHECK/TESTEMUNHA e COMERCIAL/COMMERCIAL são reconhecidas. As cores e a regressão não constituem teste de superioridade.
+
+## Produtividade e proteína
+
+A aba **Produtividade × proteína** permite alternar a produtividade entre dados brutos e a estimativa
+BLUE/BLUP válida para o datacut. `protein` é sempre bruto: primeiro se calcula a média das parcelas
+dentro de cada ensaio e depois a média entre ensaios, dando peso igual a cada ensaio. O gráfico tem
+um ponto por genótipo, seletor independente, exportação CSV e regressão apenas dos checks e comerciais.
+
+## Seleção
+
+A aba **Seleção** replica a análise de produtividade × ciclo, com produtividade bruta ou estimada.
+Checks e comerciais compartilham a legenda preta e são os únicos materiais usados na regressão.
+Os demais materiais são classificados contra a média de produtividade das testemunhas do datacut:
+ganho acima de 5% em verde, ganho acima de 0% até 5% em amarelo e ganho nulo ou negativo em vermelho.
+O valor percentual e a categoria original permanecem no hover e no CSV.
 
 Referência técnica: [componentes de variância e fatores cruzados no statsmodels](https://www.statsmodels.org/stable/examples/notebooks/generated/variance_components.html).
 
